@@ -37,7 +37,7 @@ import { AppModal } from "@/components/ui/product/app-modal";
 import { getNodeSpec } from "@/constant/canvas";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
-import { CanvasCloudAgentPanel } from "@/components/canvas/canvas-cloud-agent-panel";
+import { CanvasCloudAgentPanel, type CloudAgentPrefillRequest } from "@/components/canvas/canvas-cloud-agent-panel";
 import { CanvasActiveTaskPanel } from "@/components/canvas/canvas-active-task-panel";
 import { CanvasProjectSidebar } from "@/components/canvas/canvas-project-sidebar";
 import { CanvasProjectAssetModal } from "@/components/canvas/canvas-project-asset-modal";
@@ -99,7 +99,7 @@ import {
     type CanvasResourceReference,
 } from "@/lib/canvas/canvas-resource-references";
 import { buildImageToPrevisAgentPrompt, buildImageToPrevisDisplayText } from "@/lib/canvas/image-to-previs-agent";
-import type { CloudAgentMessagePresentation } from "@/services/cloud-agent-conversations";
+import { useDirectorCanvasHandoff } from "@/open-ai-canvas-expand/use-director-canvas-handoff";
 import { CanvasConnectionCreateMenu, CanvasNodePanelOverlay } from "@/components/canvas/canvas-workspace-overlays";
 import { CanvasOverlayLayerContainer, CanvasOverlayLayerProvider } from "@/components/canvas/canvas-overlay-layer";
 import { CanvasLeaferGraphicsLayer } from "@/components/canvas/canvas-leafer-graphics-layer";
@@ -247,7 +247,7 @@ function CanvasViewportPage() {
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     // 每次发送带递增 id：重复发送同一节点时文本相同，仍需触发一次追加。
-    const [agentPrefillRequest, setAgentPrefillRequest] = useState<(CloudAgentMessagePresentation & { id: number; text: string; autoSubmit?: boolean; requiresVision?: boolean }) | null>(null);
+    const [agentPrefillRequest, setAgentPrefillRequest] = useState<CloudAgentPrefillRequest | null>(null);
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
     const [canvasAppearance, setCanvasAppearance] = useState<CanvasAppearance>(() => canvasAppearanceForTheme(colorTheme));
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>(DEFAULT_CANVAS_BACKGROUND_MODE);
@@ -757,6 +757,29 @@ function CanvasViewportPage() {
         setSelectedConnectionId,
         setContextMenu,
         setDialogNodeId,
+    });
+    const persistDirectorNodes = useCallback(
+        async (nextNodes: CanvasNodeData[]) => {
+            updateProject(projectId, { nodes: nextNodes });
+        },
+        [projectId, updateProject],
+    );
+    const reportDirectorError = useCallback((value: string) => message.error(value), [message]);
+    const handleDirectorPrefillPendingPersisted = useDirectorCanvasHandoff({
+        projectId,
+        projectLoaded,
+        assets,
+        assetsHydrated,
+        searchParams,
+        setSearchParams,
+        nodesRef,
+        selectedNodeIdsRef,
+        setSelectedNodeIds,
+        insertPayloads: handleProjectAssetsInsert,
+        persistNodes: persistDirectorNodes,
+        enqueueAgentPrefill: setAgentPrefillRequest,
+        openAgent,
+        reportError: reportDirectorError,
     });
     const replaceCanvasNodeMedia = useCallback((node: CanvasNodeData) => handleUploadRequest(node.id), [handleUploadRequest]);
     const {
@@ -2890,6 +2913,7 @@ function CanvasViewportPage() {
                                         selectedNodeIds={Array.from(selectedNodeIds)}
                                         references={agentMentionReferences}
                                         prefillRequest={agentPrefillRequest}
+                                        onPrefillPendingPersisted={handleDirectorPrefillPendingPersisted}
                                         open={assistantOpen}
                                         onOpen={openAgent}
                                         onCollapse={closeAgent}

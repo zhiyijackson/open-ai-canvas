@@ -19,6 +19,7 @@ import (
 	"yingce/backend/internal/database"
 	"yingce/backend/internal/handler"
 	"yingce/backend/internal/logging"
+	expandopenapi "yingce/backend/internal/open-ai-canvas-expand/expand-openapi"
 	"yingce/backend/internal/repository"
 	"yingce/backend/internal/service"
 	"yingce/backend/internal/updaterclient"
@@ -124,6 +125,19 @@ func run(ctx context.Context) error {
 	registerSystemStatusRoutes(api, status)
 	handler.RegisterOAuthCallbackRoutes(r, svc)
 	handler.RegisterCanvasAPI(api, svc)
+	expandManager, err := expandopenapi.NewManager(dataDir, svc)
+	if err != nil {
+		slog.Error("expand-openapi disabled", "error", err)
+		expandopenapi.RegisterUnavailable(api)
+	} else {
+		expandopenapi.Register(api, r, expandManager)
+		expandManager.Start(ctx)
+		defer func() {
+			if closeErr := expandManager.Close(); closeErr != nil {
+				slog.Error("close expand-openapi", "error", closeErr)
+			}
+		}()
+	}
 	r.NoRoute(handler.SystemProxyNoRouteHandler(svc))
 
 	listener, err := net.Listen("tcp", addr)

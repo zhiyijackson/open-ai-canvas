@@ -210,6 +210,11 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if billingOrder != nil {
 		task.BillingOrderID = billingOrder.ID
 	}
+	if s.taskCreateObserver != nil {
+		if err := s.taskCreateObserver(userID, task.ID, task.TraceID); err != nil {
+			return nil, err
+		}
+	}
 	err = s.createTaskWithinStorageQuota(&task, billingOrder, policy)
 	if errors.Is(err, repository.ErrActiveTaskLimit) {
 		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))

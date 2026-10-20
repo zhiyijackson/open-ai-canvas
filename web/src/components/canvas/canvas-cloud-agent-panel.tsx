@@ -64,6 +64,13 @@ import { appendAgentError, appendUniqueMessage, applyAgentEvent, positiveNumber,
 import { AgentContextRing, AgentConversation, AgentHeader, AgentHistory, AgentLauncher, ComposerControls } from "./canvas-cloud-agent-panel-parts";
 import { AgentConnectorsBar } from "./canvas-cloud-agent-connectors";
 
+export type CloudAgentPrefillRequest = CloudAgentMessagePresentation & {
+    id: number;
+    text: string;
+    autoSubmit?: boolean;
+    requiresVision?: boolean;
+};
+
 type CloudAgentPanelProps = {
     canvasId: string;
     domainProjectId?: string;
@@ -72,7 +79,9 @@ type CloudAgentPanelProps = {
     references: CanvasResourceReference[];
     open: boolean;
     /** 外部预填请求（如右键“发送到 Agent”）；id 变化即追加一次 text，可选自动提交和视觉模型路由。 */
-    prefillRequest?: (CloudAgentMessagePresentation & { id: number; text: string; autoSubmit?: boolean; requiresVision?: boolean }) | null;
+    prefillRequest?: CloudAgentPrefillRequest | null;
+    /** 预填内容已写入 Agent 自身的幂等待提交记录；此时调用方才可消费外部路由。 */
+    onPrefillPendingPersisted?: (prefillId: number) => Promise<void> | void;
     onOpen: () => void;
     onCollapse: () => void;
     onFocusNode?: (nodeId: string) => void;
@@ -82,7 +91,7 @@ type CloudAgentPanelProps = {
 };
 type AgentPanelView = "chat" | "history" | "settings";
 
-export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, selectedNodeIds, references, open, prefillRequest, onOpen, onCollapse, onFocusNode, canvasNodes, runningNodeId }: CloudAgentPanelProps) {
+export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, selectedNodeIds, references, open, prefillRequest, onPrefillPendingPersisted, onOpen, onCollapse, onFocusNode, canvasNodes, runningNodeId }: CloudAgentPanelProps) {
     const userId = useUserStore((state) => state.user?.id);
     const theme = canvasThemes[useActiveTheme()];
     const config = useEffectiveConfig();
@@ -643,7 +652,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
         }
     };
 
-    const submit = async (override?: string, options?: CloudAgentMessagePresentation & { requiresVision?: boolean }) => {
+    const submit = async (override?: string, options?: CloudAgentMessagePresentation & { id?: number; requiresVision?: boolean }) => {
         const activity = canvasEditLeases.agent(canvasId);
         if (activity && activity.runId !== run?.id) return;
         const draft = (override ?? prompt).trim();
@@ -652,7 +661,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
         const matchesPending = pendingRequest?.request && pendingRequest.displayText === draft;
         const matchesPrefill = prefilled?.displayText === draft;
         const value = matchesPending ? pendingRequest.request!.prompt : matchesPrefill ? prefilled!.text : draft;
-        options = matchesPending ? { ...options, displayText: pendingRequest.displayText, canvasReferenceNodeId: pendingRequest.canvasReferenceNodeId } : matchesPrefill ? prefilled! : options;
+        options = matchesPending ? { ...(matchesPrefill ? prefilled : options), displayText: pendingRequest.displayText, canvasReferenceNodeId: pendingRequest.canvasReferenceNodeId } : matchesPrefill ? prefilled! : options;
         if (running) {
             await interject(value);
             return;
@@ -734,6 +743,8 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                 ...conversations.filter((item) => item.id !== activeConversationId),
             ]));
             if (currentScope.current !== scope) return;
+            if (options?.id !== undefined) await onPrefillPendingPersisted?.(options.id);
+            if (currentScope.current !== scope) return;
             setPrompt("");
             prefilledSubmissionRef.current = null;
             setMessages(nextMessages);
@@ -774,7 +785,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
         const pending = pendingAutoSubmit;
         if (!pending || !historyHydrated || !pendingHydrated || profileLoading || !profileView || profileError || busy || running || otherAgentRunning) return;
         setPendingAutoSubmit(null);
-        void submit(pending.text, { requiresVision: pending.requiresVision, displayText: pending.displayText, canvasReferenceNodeId: pending.canvasReferenceNodeId });
+        void submit(pending.text, { id: pending.id, requiresVision: pending.requiresVision, displayText: pending.displayText, canvasReferenceNodeId: pending.canvasReferenceNodeId });
     }, [busy, historyHydrated, otherAgentRunning, pendingAutoSubmit, pendingHydrated, profileError, profileLoading, profileView, running]);
 
     const stop = async () => {
