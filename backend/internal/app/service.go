@@ -105,6 +105,14 @@ type Service struct {
 	modelAvailabilityMu      sync.RWMutex
 	modelAvailabilityCache   map[publicModelAvailabilityKey]*PublicModelAvailability
 	modelAvailabilityAt      time.Time
+	taskCreateObserver       func(userID, taskID, traceID string) error
+}
+
+// SetTaskCreateObserver installs the optional additive integration checkpoint
+// invoked immediately before an ordinary task enters the host billing/create
+// transaction. The observer must not mutate host task or billing state.
+func (s *Service) SetTaskCreateObserver(observer func(userID, taskID, traceID string) error) {
+	s.taskCreateObserver = observer
 }
 
 const taskWorkerConcurrency = 3

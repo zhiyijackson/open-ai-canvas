@@ -18,6 +18,8 @@ export type AgentCanvasContext = {
     canvasNodes?: readonly CanvasNodeData[];
     runningNodeId?: string | null;
     prefillRequest?: AgentPrefillRequest | null;
+    /** 预填内容已持久化为 Agent 待提交记录，调用方才可确认交接。 */
+    onPrefillPendingPersisted?: (prefillId: number) => Promise<void> | void;
     onFocusNode?: (nodeId: string) => void;
 };
 

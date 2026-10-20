@@ -1,5 +1,5 @@
-import { WorkbenchPage } from "./image-workbench-page";
+import { ExpandWorkbenchRoute } from "@/open-ai-canvas-expand/generation-workbench-adapter";
 
 export default function ImageWorkbenchRoute() {
-    return <WorkbenchPage kind="image" />;
+    return <ExpandWorkbenchRoute kind="image" />;
 }
