@@ -108,9 +108,11 @@ type Service struct {
 	modelAvailabilityCache   map[publicModelAvailabilityKey]*PublicModelAvailability
 	modelAvailabilityAt      time.Time
 	// dramaTaskHook 只在测试中替换短剧调度的任务提交，生产路径始终走 CreateTask 准入。
-	dramaTailFrameHook func(userID, resourceID string) (string, error)
-	dramaTaskHook      func(userID string, req CreateTaskRequest, timeline *renderProject) (*model.Task, error)
-	taskCreateObserver func(userID, taskID, traceID string) error
+	dramaTailFrameHook         func(userID, resourceID string) (string, error)
+	dramaTaskHook              func(userID string, req CreateTaskRequest, timeline *renderProject) (*model.Task, error)
+	taskCreateObserver         func(userID, taskID, traceID string) error
+	taskCreateRejectedObserver func(userID, taskID, traceID string) error
+	taskRetryObserver          func(userID, taskID string)
 }
 
 // SetTaskCreateObserver installs the optional additive integration checkpoint
@@ -118,6 +120,18 @@ type Service struct {
 // transaction. The observer must not mutate host task or billing state.
 func (s *Service) SetTaskCreateObserver(observer func(userID, taskID, traceID string) error) {
 	s.taskCreateObserver = observer
+}
+
+// SetTaskCreateRejectedObserver installs compensation for the narrow set of
+// host transaction refusals that prove no task or billing order committed.
+func (s *Service) SetTaskCreateRejectedObserver(observer func(userID, taskID, traceID string) error) {
+	s.taskCreateRejectedObserver = observer
+}
+
+// SetTaskRetryObserver installs an additive notification after a task retry or
+// media-recovery requeue has committed and the task is visible as queued.
+func (s *Service) SetTaskRetryObserver(observer func(userID, taskID string)) {
+	s.taskRetryObserver = observer
 }
 
 const taskWorkerConcurrency = 3

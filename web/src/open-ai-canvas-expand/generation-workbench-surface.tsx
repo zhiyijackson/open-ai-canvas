@@ -12,7 +12,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { MediaPreview } from "@/components/media-preview";
 import { WorkspacePage } from "@/components/layout/workspace-page";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeImageValue } from "@/lib/model-capabilities";
 import { prepareBackendGenerationTask } from "@/services/api/generation-task";
 import { resourceStorageKey } from "@/services/api/resources";
 import { localSavedRemotePendingMessage, saveRemoteUserDataNow } from "@/services/user-data-sync";
@@ -24,7 +24,7 @@ import { useUserStore } from "@/stores/use-user-store";
 
 import { useWorkbenchDirector } from "./use-workbench-director";
 import { useWorkbenchOutputMetadata } from "./use-workbench-output-metadata";
-import { expandResourceFileURL } from "./generation-api";
+import { expandResourceFileURL, isExpandSubmissionRejected } from "./generation-api";
 import type { WorkbenchReference, WorkbenchSurfaceController } from "./workbench-contract";
 import {
     clearWorkbenchMaskPendingSubmission,
@@ -33,6 +33,7 @@ import {
     writeWorkbenchDraft,
     writeWorkbenchMaskPendingSubmission,
     workbenchSessionEpoch,
+    sameWorkbenchComposerDraft,
     type WorkbenchSessionDraft,
 } from "./workbench-session";
 import { assetReferenceData, safeWorkbenchDownloadURL, taskOutputPreviews, workbenchDeliveryState } from "./workbench-task-output";
@@ -40,7 +41,9 @@ import {
     assignWorkbenchReferenceRole,
     historicalImageParameterIssue,
     historicalVideoParameterIssue,
+    normalizedWorkbenchVideoParameters,
     serializedWorkbenchImageParameters,
+    workbenchCompatibilityParameters,
     workbenchFrameRoleConflict,
 } from "./workbench-support";
 
@@ -77,6 +80,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
     const [maskSubmitting, setMaskSubmitting] = useState(false);
     const [maskPending, setMaskPending] = useState(() => readWorkbenchMaskPendingSubmission(userId));
     const [historicalParameters, setHistoricalParameters] = useState<Record<string, unknown> | null>(null);
+    const [cleanDraft, setCleanDraft] = useState<WorkbenchSessionDraft | null>(null);
     const directorImageInputRef = useRef<HTMLInputElement>(null);
     const directorAudioInputRef = useRef<HTMLInputElement>(null);
     const workbenchRevisionRef = useRef(0);
@@ -99,7 +103,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
         kind: controller.kind,
         prompt: controller.prompt,
         references: controller.references,
-        seconds: controller.config.videoSeconds || "6",
+        seconds: controller.parameters.seconds || "6",
         userId,
         workbenchRevisionRef,
     });
@@ -120,7 +124,6 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
               ? historicalVideoParameterIssue(profile.video, historicalParameters)
               : undefined
         : undefined;
-    const composerDirty = Boolean(controller.prompt.trim() || controller.references.length || controller.tool);
     const validationMessage =
         controller.prompt.length > promptLimit
             ? `提示词超过 ${promptLimit} 字，请缩短后提交`
@@ -147,6 +150,18 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
         parameters: controller.parameters,
         references: controller.references.flatMap((reference) => reference.resourceId ? [{ resourceId: reference.resourceId, kind: reference.kind, role: reference.role, ...(reference.slotKey ? { slotKey: reference.slotKey } : {}), name: reference.name }] : []),
     }), [controller.parameters, controller.preset, controller.prompt, controller.references, controller.selectedModel, controller.tool, director.contextId, director.language]);
+    const composerDirty = cleanDraft
+        ? !sameWorkbenchComposerDraft(cleanDraft, draft)
+        : Boolean(controller.prompt.trim() || controller.references.length || controller.tool);
+
+    useEffect(() => {
+        setCleanDraft(null);
+    }, [controller.kind, userId]);
+
+    useEffect(() => {
+        if (!controller.draftReady || cleanDraft) return;
+        setCleanDraft(structuredClone(draft));
+    }, [cleanDraft, controller.draftReady, draft]);
 
     useEffect(() => {
         const key = `${userId}:${controller.kind}`;
@@ -154,6 +169,9 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
         hydratedDraftKey.current = key;
         const saved = readWorkbenchDraft(userId, controller.kind);
         if (!saved) return;
+        // Preserve the empty/configured composer as the comparison baseline before
+        // hydrating the unsaved session draft, so a remount cannot make edits clean.
+        setCleanDraft(structuredClone(draft));
         if (saved.directorContextId) director.setContextId(saved.directorContextId);
         if (saved.directorLanguage) director.setLanguage(saved.directorLanguage);
         controller.chooseTool(saved.toolId ? controller.tools.find((tool) => tool.id === saved.toolId) || null : null);
@@ -171,7 +189,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
             role: reference.role || "reference",
             ...(reference.slotKey ? { slotKey: reference.slotKey } : {}),
         })));
-    }, [controller, director, userId]);
+    }, [controller, director, draft, userId]);
 
     useEffect(() => {
         if (hydratedDraftKey.current !== `${userId}:${controller.kind}`) return;
@@ -207,12 +225,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
                 imageParameters: normalized.imageParameters || "",
             });
         } else if (controller.kind === "video" && profile.video) {
-            const normalized = normalizeVideoValue(profile.video, {
-                seconds: historicalParameters.seconds != null ? String(historicalParameters.seconds) : undefined,
-                ratio: typeof historicalParameters.ratio === "string" ? historicalParameters.ratio : undefined,
-                resolution: typeof historicalParameters.resolution === "string" ? historicalParameters.resolution : undefined,
-            });
-            controller.applyParameters({ seconds: normalized.seconds, ratio: normalized.ratio, videoQuality: normalized.resolution.replace(/p$/i, "") });
+            controller.applyParameters(normalizedWorkbenchVideoParameters(profile.video, historicalParameters));
         }
         setHistoricalParameters(null);
     };
@@ -305,7 +318,13 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
             setMaskOpen(false);
             message.success("局部编辑任务已提交");
         } catch (error) {
-            message.error(error instanceof Error ? `局部编辑提交状态待确认：${error.message}` : "局部编辑提交状态待确认");
+            if (isExpandSubmissionRejected(error)) {
+                clearWorkbenchMaskPendingSubmission(userId);
+                setMaskPending(null);
+                message.error(error instanceof Error ? error.message : "局部编辑提交失败");
+            } else {
+                message.error(error instanceof Error ? `局部编辑提交状态待确认：${error.message}` : "局部编辑提交状态待确认");
+            }
         } finally {
             setMaskSubmitting(false);
         }
@@ -419,6 +438,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
                 onNew: () => replaceDraft(() => {
                     director.setContextId(crypto.randomUUID());
                     controller.resetWorkbench();
+                    setCleanDraft(null);
                 }, "新建会清空当前提示词和参考素材，历史任务与素材会保留。"),
                 onAddReference: () => setAssetPickerOpen(true),
                 onSavePrompt: () => void savePrompt(),
@@ -489,24 +509,15 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
                     const openTask = () => {
                         workbenchRevisionRef.current += 1;
                         setVoiceOpen(false);
-                        const snapshot = workbenchTaskSnapshot(task);
-                        const parameters = snapshot?.kind === controller.kind ? snapshot.parameters : null;
                         void controller.openTask(task)
-                            .then(() => {
-                                if (controller.kind === "image" && parameters) {
-                                    controller.applyParameters({
-                                        imageParameters: serializedWorkbenchImageParameters(parameters),
-                                        transparentBackground:
-                                            typeof parameters.transparentBackground === "boolean" || typeof parameters.transparentBackground === "string"
-                                                ? String(parameters.transparentBackground)
-                                                : "false",
-                                    });
-                                }
-                                setHistoricalParameters(parameters);
+                            .then((restored) => {
+                                if (!restored) return;
+                                setHistoricalParameters(restored.parameters);
+                                setCleanDraft(null);
                             })
                             .catch((error) => message.error(error instanceof Error ? error.message : "历史任务加载失败"));
                     };
-                    if (!composerDirty || outputTask?.id === task.id) {
+                    if (!composerDirty) {
                         openTask();
                         return;
                     }
@@ -539,7 +550,10 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
             } : undefined}
             slots={{
                 pendingSubmission: maskPending || controller.hasPendingSubmission ? <div className="flex flex-wrap items-center gap-2" role="status">{controller.hasPendingSubmission ? <Button size="small" onClick={() => void controller.recoverPendingSubmission().catch((error) => message.error(error instanceof Error ? `任务详情仍不可用：${error.message}` : "任务详情仍不可用"))}>恢复待确认生成</Button> : null}{maskPending ? <Button size="small" loading={maskSubmitting} onClick={() => void executeMaskTask(maskPending)}>恢复待确认局部编辑</Button> : null}<span className="text-xs text-muted-foreground">恢复已冻结的原请求，不会创建新的提交。</span></div> : undefined,
-                modelPicker: <ModelPicker config={controller.composerConfig} value={controller.selectedModel} onChange={controller.selectModel} capability={controller.kind} showSelectedPrice={false} />,
+                modelPicker: <ModelPicker config={controller.composerConfig} value={controller.selectedModel} onChange={(model) => {
+                    setHistoricalParameters(workbenchCompatibilityParameters(controller.kind, controller.parameters));
+                    controller.selectModel(model);
+                }} capability={controller.kind} showSelectedPrice={false} />,
                 settingsPanel: <Popover trigger="click" placement="topLeft" content={settingsPanel} arrow={false}><Button>{controller.kind === "image" ? "图片设置" : "视频设置"}</Button></Popover>,
                 referenceInput: <div className="flex gap-2"><Button icon={<Images className="size-4" />} onClick={() => setAssetPickerOpen(true)}>素材库</Button><Button icon={<Upload className="size-4" />} onClick={() => controller.fileRef.current?.click()}>上传</Button><input ref={controller.fileRef} className="hidden" type="file" multiple accept={pickerMediaKinds.map((mediaKind) => `${mediaKind}/*`).join(",")} onChange={(event) => { if (event.target.files) void addComposerFiles(event.target.files); event.target.value = ""; }} /></div>,
                 voiceInput: voiceOpen ? <VoiceRecordingInline onTranscribed={(text) => { controller.setPrompt((current) => `${current}${current.trim() ? "\n" : ""}${text}`); setVoiceOpen(false); }} onCancel={() => setVoiceOpen(false)} /> : <Button type="text" icon={<Mic className="size-4" />} onClick={() => setVoiceOpen(true)} />,

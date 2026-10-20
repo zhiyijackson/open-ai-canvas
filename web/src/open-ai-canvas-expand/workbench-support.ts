@@ -52,6 +52,84 @@ export function serializedWorkbenchImageParameters(parameters: Record<string, un
     return parameters.imageParameters && typeof parameters.imageParameters === "object" ? JSON.stringify(parameters.imageParameters) : "";
 }
 
+export function workbenchImageSubmissionSettings(imageRequest: {
+    size: string;
+    quality: string;
+    imageResolution?: string;
+    count: string;
+    transparentBackground: string;
+    imageParameters?: string;
+}) {
+    return {
+        parameters: {
+            size: imageRequest.size,
+            quality: imageRequest.quality,
+            imageResolution: imageRequest.imageResolution,
+            count: Number(imageRequest.count),
+            transparentBackground: imageRequest.transparentBackground === "true",
+            ...(imageRequest.imageParameters ? { imageParameters: parseImageParameters(imageRequest.imageParameters) || {} } : {}),
+        },
+        config: {
+            size: imageRequest.size,
+            quality: imageRequest.quality,
+            imageResolution: imageRequest.imageResolution,
+            count: imageRequest.count,
+            transparentBackground: imageRequest.transparentBackground,
+            ...(imageRequest.imageParameters ? { imageParameters: imageRequest.imageParameters } : {}),
+        },
+    };
+}
+
+export function workbenchCompatibilityParameters(kind: "image" | "video", parameters: Record<string, string>) {
+    return kind === "image"
+        ? {
+              size: parameters.ratio,
+              quality: parameters.quality,
+              imageResolution: parameters.imageResolution,
+              count: parameters.count,
+              transparentBackground: parameters.transparentBackground,
+              imageParameters: parameters.imageParameters || "",
+          }
+        : {
+              seconds: parameters.seconds,
+              ratio: parameters.ratio,
+              resolution: parameters.videoQuality,
+              generateAudio: parameters.generateAudio,
+              watermark: parameters.watermark,
+          };
+}
+
+type WorkbenchImageDefaults = { ratio: string; quality: string; imageResolution: string; count: string; transparentBackground: string; imageParameters: string };
+type WorkbenchVideoDefaults = { seconds: string; ratio: string; videoQuality: string; generateAudio: string; watermark: string };
+
+export function workbenchDefaultParameters(kind: "image", imageProfile?: ImageCapabilityConfig): WorkbenchImageDefaults;
+export function workbenchDefaultParameters(kind: "video", imageProfile: undefined, videoProfile?: VideoCapabilityConfig): WorkbenchVideoDefaults;
+export function workbenchDefaultParameters(kind: "image" | "video", imageProfile?: ImageCapabilityConfig, videoProfile?: VideoCapabilityConfig) {
+    if (kind === "image") {
+        const defaults = imageProfile
+            ? normalizeImageValue(imageProfile, {})
+            : { size: "1:1", quality: "auto", imageResolution: "auto", count: "1", transparentBackground: "false", imageParameters: "" };
+        return {
+            ratio: defaults.size,
+            quality: defaults.quality,
+            imageResolution: defaults.imageResolution || "auto",
+            count: defaults.count,
+            transparentBackground: defaults.transparentBackground,
+            imageParameters: defaults.imageParameters || "",
+        };
+    }
+    const defaults = videoProfile
+        ? normalizeVideoValue(videoProfile, {})
+        : { seconds: "6", ratio: "16:9", resolution: "720p" };
+    return {
+        seconds: defaults.seconds,
+        ratio: defaults.ratio,
+        videoQuality: defaults.resolution.replace(/p$/i, ""),
+        generateAudio: String(videoProfile?.generateAudio.default || false),
+        watermark: String(videoProfile?.watermark.default || false),
+    };
+}
+
 export function historicalImageParameterIssue(profile: ImageCapabilityConfig, parameters: Record<string, unknown>) {
     const imageParameters = serializedWorkbenchImageParameters(parameters) || undefined;
     const requested = {
@@ -82,5 +160,28 @@ export function historicalVideoParameterIssue(profile: VideoCapabilityConfig, pa
     if (requested.seconds !== undefined && requested.seconds !== normalized.seconds) return "视频时长与当前模型不兼容，请重新选择参数";
     if (requested.ratio !== undefined && requested.ratio !== normalized.ratio) return "视频比例与当前模型不兼容，请重新选择参数";
     if (requested.resolution !== undefined && requested.resolution.replace(/p$/i, "") !== normalized.resolution.replace(/p$/i, "")) return "视频清晰度与当前模型不兼容，请重新选择参数";
+    if (workbenchBooleanParameter(parameters.generateAudio, false) && !profile.generateAudio.supported) return "生成音频与当前模型不兼容，请重新选择参数";
+    if (workbenchBooleanParameter(parameters.watermark, false) && !profile.watermark.supported) return "视频水印与当前模型不兼容，请重新选择参数";
     return undefined;
+}
+
+function workbenchBooleanParameter(value: unknown, fallback: boolean) {
+    if (value === true || value === "true") return true;
+    if (value === false || value === "false") return false;
+    return fallback;
+}
+
+export function normalizedWorkbenchVideoParameters(profile: VideoCapabilityConfig, parameters: Record<string, unknown>) {
+    const normalized = normalizeVideoValue(profile, {
+        seconds: parameters.seconds != null ? String(parameters.seconds) : undefined,
+        ratio: typeof parameters.ratio === "string" ? parameters.ratio : undefined,
+        resolution: typeof parameters.resolution === "string" ? parameters.resolution : undefined,
+    });
+    return {
+        seconds: normalized.seconds,
+        ratio: normalized.ratio,
+        videoQuality: normalized.resolution.replace(/p$/i, ""),
+        generateAudio: String(profile.generateAudio.supported ? workbenchBooleanParameter(parameters.generateAudio, profile.generateAudio.default) : false),
+        watermark: String(profile.watermark.supported ? workbenchBooleanParameter(parameters.watermark, profile.watermark.default) : false),
+    };
 }

@@ -27,6 +27,8 @@ import { useCreationPreferencesStore } from "@/stores/use-creation-preferences-s
 import { logicalModelIDForConfig, modelDisplayName, modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { WorkbenchReference, WorkbenchRuntime, WorkbenchSurfaceRenderer } from "@/open-ai-canvas-expand/workbench-contract";
+import { createWorkbenchRestoreCoordinator } from "@/open-ai-canvas-expand/workbench-session";
+import { serializedWorkbenchImageParameters, workbenchDefaultParameters, workbenchImageSubmissionSettings } from "@/open-ai-canvas-expand/workbench-support";
 
 import { workbenchCategoryLabel, workbenchCategories } from "./workbench-catalog";
 import { missingWorkbenchInput, workbenchPromptRequired, workbenchVideoOperation } from "./workbench-input";
@@ -202,6 +204,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
     const [activeTask, setActiveTask] = useState<GenerationTask | null>(null);
     const [resultHidden, setResultHidden] = useState(false);
     const workbenchRevisionRef = useRef(0);
+    const [restoreCoordinator] = useState(() => createWorkbenchRestoreCoordinator(() => workbenchRevisionRef.current));
     const [tasks, setTasks] = useState<GenerationTask[]>([]);
     const [tasksLoading, setTasksLoading] = useState(true);
     const [detailTask, setDetailTask] = useState<GenerationTask | null>(null);
@@ -234,6 +237,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
     // 与创作页同一份可选目录。系统渠道模型通常没有 logicalModelId，不能据此滤成空列表。
     const models = useMemo(() => selectableModelsByCapability(config, capability), [capability, config]);
     const selectedModel = models.includes(configuredModel) ? configuredModel : models[0] || "";
+    const settingsModelRef = useRef(selectedModel);
     const profile = useMemo(() => modelCapabilityConfigFor(config, selectedModel), [config, selectedModel]);
     const imageProfile = profile.image;
     const videoProfile = profile.video;
@@ -324,31 +328,35 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
 
     useEffect(() => {
         if (!settingsReady || kind !== "image" || !imageProfile) return;
-        const saved = useCreationPreferencesStore.getState().preferences.image;
+        if (settingsModelRef.current === selectedModel) return;
+        settingsModelRef.current = selectedModel;
         const normalized = normalizeImageValue(imageProfile, {
-            size: saved?.ratio || imageProfile.size.default,
-            quality: saved?.quality || imageProfile.quality.default,
-            imageResolution: saved?.imageResolution || imageProfile.resolution.default,
-            count: saved?.count || count,
+            size: ratio,
+            quality,
+            imageResolution,
+            count,
+            transparentBackground: config.transparentBackground,
+            imageParameters: config.imageParameters,
         });
         setRatio(normalized.size);
         setQuality(normalized.quality);
         setImageResolution(normalized.imageResolution || imageProfile.resolution.default || "auto");
         setCount(normalized.count);
-    }, [imageProfile, kind, selectedModel, settingsReady]);
+    }, [config.imageParameters, config.transparentBackground, count, imageProfile, imageResolution, kind, quality, ratio, selectedModel, settingsReady]);
 
     useEffect(() => {
         if (!settingsReady || kind !== "video" || !videoProfile) return;
-        const saved = useCreationPreferencesStore.getState().preferences.video;
+        if (settingsModelRef.current === selectedModel) return;
+        settingsModelRef.current = selectedModel;
         const normalized = normalizeVideoValue(videoProfile, {
-            seconds: saved?.seconds || String(videoProfile.duration.default),
-            ratio: saved?.ratio || videoProfile.defaultRatio,
-            resolution: saved?.videoQuality || videoProfile.defaultResolution,
+            seconds,
+            ratio,
+            resolution: videoQuality,
         });
         setSeconds(normalized.seconds);
         setRatio(normalized.ratio);
         setVideoQuality(normalized.resolution.replace(/p$/i, ""));
-    }, [kind, selectedModel, settingsReady, videoProfile]);
+    }, [kind, ratio, seconds, selectedModel, settingsReady, videoProfile, videoQuality]);
 
     const quoteRequirements = useMemo(
         () => ({
@@ -470,12 +478,22 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         setDetailLoading(false);
         setDetailTask(null);
         setMobileTab("generate");
-        setCount("1");
-        setRatio(kind === "image" ? imageProfile?.size.default || "1:1" : videoProfile?.defaultRatio || "16:9");
-        setQuality(imageProfile?.quality.default || "auto");
-        setImageResolution(imageProfile?.resolution.default || "auto");
-        setSeconds(String(videoProfile?.duration.default || 6));
-        setVideoQuality((videoProfile?.defaultResolution || "720p").replace(/p$/i, ""));
+        if (kind === "image") {
+            const defaults = workbenchDefaultParameters("image", imageProfile);
+            setCount(defaults.count);
+            setRatio(defaults.ratio);
+            setQuality(defaults.quality);
+            setImageResolution(defaults.imageResolution);
+            updateConfig("transparentBackground", defaults.transparentBackground);
+            updateConfig("imageParameters", defaults.imageParameters);
+        } else {
+            const defaults = workbenchDefaultParameters("video", undefined, videoProfile);
+            setSeconds(defaults.seconds);
+            setRatio(defaults.ratio);
+            setVideoQuality(defaults.videoQuality);
+            updateConfig("videoGenerateAudio", defaults.generateAudio);
+            updateConfig("videoWatermark", defaults.watermark);
+        }
         const params = new URLSearchParams(searchParams);
         params.delete("tool");
         params.delete("preset");
@@ -537,6 +555,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
     };
 
     const updateImageSettings = (size: string, nextQuality?: string, nextResolution?: string) => {
+        workbenchRevisionRef.current += 1;
         setRatio(size);
         rememberImageSettings({ ratio: size });
         if (nextQuality) {
@@ -628,8 +647,9 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         try {
             const imageRequest = kind === "image" && imageProfile ? normalizeImageValue(imageProfile, { size: ratio, quality, imageResolution, imageParameters: config.imageParameters, count, transparentBackground: config.transparentBackground }) : null;
             const videoRequest = kind === "video" && videoProfile ? normalizeVideoValue(videoProfile, { seconds, ratio, resolution: videoQuality }) : null;
+            const imageSubmission = imageRequest ? workbenchImageSubmissionSettings(imageRequest) : null;
             const parameters = imageRequest
-                ? { size: imageRequest.size, quality: imageRequest.quality, imageResolution: imageRequest.imageResolution, count: Number(imageRequest.count) }
+                ? imageSubmission!.parameters
                 : {
                       seconds: Number(videoRequest?.seconds || seconds),
                       ratio: videoRequest?.ratio || ratio,
@@ -640,7 +660,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
             const generationConfig = {
                 ...composerConfig,
                 model: selectedModel,
-                ...(imageRequest ? { imageModel: selectedModel, size: imageRequest.size, quality: imageRequest.quality, imageResolution: imageRequest.imageResolution, count: imageRequest.count } : {}),
+                ...(imageSubmission ? { imageModel: selectedModel, ...imageSubmission.config } : {}),
                 ...(videoRequest ? { videoModel: selectedModel, size: videoRequest.ratio, videoSeconds: videoRequest.seconds, vquality: videoRequest.resolution.replace(/p$/i, "") } : {}),
             };
             const readyReferences = references.filter((reference) => reference.resourceId);
@@ -718,7 +738,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
             }
             message.success("生成任务已提交");
         } catch (error) {
-            message.error(runtime.hasPendingSubmission() ? "任务已受理，详情暂时不可用，可稍后恢复查询" : error instanceof Error ? error.message : "任务提交失败");
+            message.error(runtime.hasPendingSubmission() ? "提交结果待确认，请恢复查询原任务" : error instanceof Error ? error.message : "任务提交失败");
         } finally {
             setBusy(false);
         }
@@ -737,7 +757,8 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         }
     };
 
-    const restoreTaskToComposer = async (task: GenerationTask, notify = true) => {
+    const restoreTaskToComposer = async (task: GenerationTask, notify = true, shouldApply: () => boolean = () => true) => {
+        if (!shouldApply()) return false;
         const snapshot = workbenchTaskSnapshot(task);
         if (!snapshot || snapshot.kind !== kind) {
             if (notify) message.warning("该任务没有可恢复的工作台参数");
@@ -746,6 +767,21 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         const restoredTool = snapshot.toolId ? tools.find((item) => item.id === snapshot.toolId) || null : null;
         const restoredPreset = restoredTool && snapshot.presetId ? restoredTool.presets.find((item) => item.id === snapshot.presetId) || null : null;
         const parameters = snapshot.parameters;
+        const restoredReferences = await Promise.all(
+            snapshot.references.map(async (reference, index): Promise<WorkbenchReference> => ({
+                id: crypto.randomUUID(),
+                name: `${reference.kind === "image" ? "图片" : reference.kind === "video" ? "视频" : "音频"} ${index + 1}`,
+                kind: reference.kind,
+                resourceId: reference.resourceId,
+                previewUrl: (await runtime.resolveResourceURL(reference.resourceId)) || "",
+                progress: 100,
+                uploading: false,
+                role: reference.role || "reference",
+                ...(reference.slotKey ? { slotKey: reference.slotKey } : {}),
+            })),
+        );
+        if (!shouldApply()) return false;
+        workbenchRevisionRef.current += 1;
         if (kind === "image") {
             const restoredRatio = typeof parameters.size === "string" ? parameters.size : ratio;
             const restoredQuality = typeof parameters.quality === "string" ? parameters.quality : quality;
@@ -756,6 +792,8 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
             setImageResolution(restoredResolution);
             setCount(restoredCount);
             rememberImageSettings({ ratio: restoredRatio, quality: restoredQuality, imageResolution: restoredResolution, count: restoredCount });
+            updateConfig("transparentBackground", typeof parameters.transparentBackground === "boolean" || typeof parameters.transparentBackground === "string" ? String(parameters.transparentBackground) : "false");
+            updateConfig("imageParameters", serializedWorkbenchImageParameters(parameters));
         } else {
             const restoredSeconds = parameters.seconds != null ? String(parameters.seconds) : seconds;
             const restoredRatio = typeof parameters.ratio === "string" ? parameters.ratio : ratio;
@@ -777,20 +815,6 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         setPrompt(task.prompt || "");
         setUploadSlotKey(undefined);
         referencesRef.current.forEach(revokeReferencePreview);
-        setReferences([]);
-        const restoredReferences = await Promise.all(
-            snapshot.references.map(async (reference, index): Promise<WorkbenchReference> => ({
-                id: createClientUUID(),
-                name: `${reference.kind === "image" ? "图片" : reference.kind === "video" ? "视频" : "音频"} ${index + 1}`,
-                kind: reference.kind,
-                resourceId: reference.resourceId,
-                previewUrl: (await runtime.resolveResourceURL(reference.resourceId)) || "",
-                progress: 100,
-                uploading: false,
-                role: reference.role || "reference",
-                ...(reference.slotKey ? { slotKey: reference.slotKey } : {}),
-            })),
-        );
         setReferences(restoredReferences);
         const params = new URLSearchParams(searchParams);
         if (restoredTool) params.set("tool", restoredTool.id);
@@ -804,6 +828,11 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         setDetailTask(null);
         if (notify) message.success("任务配置已载入编辑器");
         return true;
+    };
+
+    const restoreKnownTaskToComposer = (task: GenerationTask, notify = true) => {
+        const attempt = restoreCoordinator.start();
+        return restoreTaskToComposer(task, notify, attempt.isCurrent);
     };
 
     const retryTask = async (task: GenerationTask) => {
@@ -886,6 +915,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                         <Select
                             value={quality}
                             onChange={(value) => {
+                                workbenchRevisionRef.current += 1;
                                 setQuality(value);
                                 rememberImageSettings({ quality: value });
                             }}
@@ -897,6 +927,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                     value={count}
                     max={imageProfile.maxOutputs}
                     onChange={(value) => {
+                        workbenchRevisionRef.current += 1;
                         setCount(value);
                         rememberImageSettings({ count: value });
                     }}
@@ -915,6 +946,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                           )
                     ).map((value) => ({ value: String(value), label: `${value} 秒` }))}
                     onChange={(value) => {
+                        workbenchRevisionRef.current += 1;
                         setSeconds(value);
                         rememberVideoSettings({ seconds: value });
                     }}
@@ -924,6 +956,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                     value={ratio}
                     options={videoProfile.ratios.map((value) => ({ value, label: value === "adaptive" ? "自适应" : value }))}
                     onChange={(value) => {
+                        workbenchRevisionRef.current += 1;
                         setRatio(value);
                         rememberVideoSettings({ ratio: value });
                     }}
@@ -933,6 +966,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                     value={videoQuality}
                     options={videoProfile.resolutions.map((value) => ({ value: value.replace(/p$/i, ""), label: value }))}
                     onChange={(value) => {
+                        workbenchRevisionRef.current += 1;
                         setVideoQuality(value);
                         rememberVideoSettings({ videoQuality: value });
                     }}
@@ -942,13 +976,19 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                         {videoProfile.generateAudio.supported ? (
                             <label>
                                 <span>生成音频</span>
-                                <Switch checked={config.videoGenerateAudio === "true"} onChange={(value) => updateConfig("videoGenerateAudio", String(value))} />
+                                <Switch checked={config.videoGenerateAudio === "true"} onChange={(value) => {
+                                    workbenchRevisionRef.current += 1;
+                                    updateConfig("videoGenerateAudio", String(value));
+                                }} />
                             </label>
                         ) : null}
                         {videoProfile.watermark.supported ? (
                             <label>
                                 <span>添加水印</span>
-                                <Switch checked={config.videoWatermark === "true"} onChange={(value) => updateConfig("videoWatermark", String(value))} />
+                                <Switch checked={config.videoWatermark === "true"} onChange={(value) => {
+                                    workbenchRevisionRef.current += 1;
+                                    updateConfig("videoWatermark", String(value));
+                                }} />
                             </label>
                         ) : null}
                     </div>
@@ -1046,18 +1086,27 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                 kind === "image"
                     ? { ratio, quality, imageResolution, count, transparentBackground: config.transparentBackground, imageParameters: config.imageParameters || "" }
                     : { ratio, seconds, videoQuality, generateAudio: config.videoGenerateAudio || "false", watermark: config.videoWatermark || "false" },
+            draftReady: settingsReady && !directoryLoading,
             mobileTab,
             setMobileTab,
-            setPrompt,
-            setReferences,
+            setPrompt: (value) => {
+                workbenchRevisionRef.current += 1;
+                setPrompt(value);
+            },
+            setReferences: (value) => {
+                workbenchRevisionRef.current += 1;
+                setReferences(value);
+            },
             setToolCategory,
             setToolSearch,
             setUploadSlotKey,
             selectModel: (model) => {
+                workbenchRevisionRef.current += 1;
                 updateConfig(kind === "image" ? "imageModel" : "videoModel", model);
                 updateConfig("model", model);
             },
             applyParameters: (parameters) => {
+                workbenchRevisionRef.current += 1;
                 if (parameters.ratio) setRatio(parameters.ratio);
                 if (kind === "image") {
                     if (parameters.quality) setQuality(parameters.quality);
@@ -1074,9 +1123,18 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
             },
             reloadTools,
             resetWorkbench,
-            chooseTool,
-            addFiles,
-            removeReference,
+            chooseTool: (nextTool) => {
+                workbenchRevisionRef.current += 1;
+                chooseTool(nextTool);
+            },
+            addFiles: async (files, slotKey) => {
+                workbenchRevisionRef.current += 1;
+                await addFiles(files, slotKey);
+            },
+            removeReference: (reference) => {
+                workbenchRevisionRef.current += 1;
+                removeReference(reference);
+            },
             submit,
             submitDirectTask: async (input) => {
                 const created = await runtime.createGenerationTask(input);
@@ -1100,8 +1158,11 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
             retryTask,
             recoverTaskMedia,
             openTask: async (task) => {
+                const attempt = restoreCoordinator.start();
                 const detail = await runtime.getTask(task.id);
-                await restoreTaskToComposer(detail);
+                const snapshot = workbenchTaskSnapshot(detail);
+                const applied = await restoreTaskToComposer(detail, true, attempt.isCurrent);
+                return applied && snapshot?.kind === kind ? { parameters: snapshot.parameters } : null;
             },
             taskModelLabel,
         });
@@ -1610,7 +1671,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                                 </div>
                             </dl>
                             <div className="workbench-detail-actions">
-                                <Button disabled={detailLoading} onClick={() => void restoreTaskToComposer(detailTask)}>
+                                <Button disabled={detailLoading} onClick={() => void restoreKnownTaskToComposer(detailTask)}>
                                     载入到编辑器
                                 </Button>
                                 {detailTask.status === "failed" || detailTask.status === "cancelled" ? (

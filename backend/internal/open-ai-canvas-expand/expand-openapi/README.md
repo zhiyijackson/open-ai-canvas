@@ -41,7 +41,19 @@ after an operator has confirmed that the original host task was not created.
 The private trace used during synchronous host dispatch is removed from the
 response and is authorized only while that dispatch is active.
 
+Confirmed transaction refusals release the pre-commit binding through the host's
+rejection observer. Only journal-confirmed refusals carry
+`details.expandOperationState: rejected`. Validation or authentication before
+dispatch carries `expandRequestState: rejected`; that request-level result does
+not establish the outcome of an earlier attempt with the same operation key.
+
 The background materializer reads only tasks recorded by this facade, reuses
 their host-owned Resource rows, and calls the host UserAsset/UpsertUserAsset
 contract. It does not copy media bytes or write core tables directly. A durable
 output binding prevents a user-deleted generated asset from being recreated.
+Host retry and media-recovery observers notify after requeue commits. Terminal
+records periodically reconcile the host task's RouteRun and UpdatedAt so a lost
+notification does not lose a later successful output. Reconciliation retains
+write-intent and deletion records; an ambiguous asset write is verified by ID
+without repeating the write. Confirmed missing resources become unavailable
+after a short grace period.

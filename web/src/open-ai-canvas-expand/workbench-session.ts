@@ -30,6 +30,10 @@ export type WorkbenchMaskPendingSubmission = {
     input: CreateTaskInput & { clientOperationId: string };
 };
 
+export type WorkbenchRestoreAttempt = {
+    isCurrent(): boolean;
+};
+
 const sessionDrafts = new Map<string, WorkbenchSessionDraft>();
 const pendingSubmissions = new Map<string, WorkbenchPendingSubmission>();
 const pendingMaskSubmissions = new Map<string, WorkbenchMaskPendingSubmission>();
@@ -137,4 +141,23 @@ export function clearWorkbenchDraftsForScope(scope: string) {
 
 export function sameWorkbenchDraft(left: WorkbenchSessionDraft, right: WorkbenchSessionDraft) {
     return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function sameWorkbenchComposerDraft(left: WorkbenchSessionDraft, right: WorkbenchSessionDraft) {
+    const composerDraft = ({ directorContextId: _contextId, directorLanguage: _language, ...draft }: WorkbenchSessionDraft) => draft;
+    return JSON.stringify(composerDraft(left)) === JSON.stringify(composerDraft(right));
+}
+
+export function createWorkbenchRestoreCoordinator(readRevision: () => number) {
+    let latestRequest = 0;
+    return {
+        start(): WorkbenchRestoreAttempt {
+            const request = ++latestRequest;
+            const revision = readRevision();
+            return { isCurrent: () => request === latestRequest && revision === readRevision() };
+        },
+        invalidate() {
+            latestRequest += 1;
+        },
+    };
 }

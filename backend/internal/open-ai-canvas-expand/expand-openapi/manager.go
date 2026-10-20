@@ -26,6 +26,8 @@ var errOperationConflict = errors.New("clientOperationId was already used with d
 
 type hostService interface {
 	SetTaskCreateObserver(func(userID, taskID, traceID string) error)
+	SetTaskCreateRejectedObserver(func(userID, taskID, traceID string) error)
+	SetTaskRetryObserver(func(userID, taskID string))
 	CurrentUser(cookieValue string) (*model.User, error)
 	Task(userID, id string) (*model.Task, error)
 	Resource(userID, id string) (*model.Resource, error)
@@ -34,12 +36,13 @@ type hostService interface {
 }
 
 type Manager struct {
-	host     hostService
-	journal  *journal
-	activeMu sync.RWMutex
-	active   map[string]activeOperation
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	host       hostService
+	journal    *journal
+	activeMu   sync.RWMutex
+	active     map[string]activeOperation
+	deliveryMu sync.Mutex
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 type activeOperation struct {
@@ -57,7 +60,28 @@ func NewManager(dataDir string, host hostService) (*Manager, error) {
 	}
 	manager := &Manager{host: host, journal: journal, active: make(map[string]activeOperation)}
 	host.SetTaskCreateObserver(manager.observeTaskCreate)
+	host.SetTaskCreateRejectedObserver(manager.observeTaskCreateRejected)
+	host.SetTaskRetryObserver(manager.observeTaskRetry)
 	return manager, nil
+}
+
+func (m *Manager) observeTaskRetry(userID, taskID string) {
+	m.deliveryMu.Lock()
+	defer m.deliveryMu.Unlock()
+	_ = m.journal.resetDelivery(strings.TrimSpace(userID), strings.TrimSpace(taskID))
+}
+
+func (m *Manager) observeTaskCreateRejected(userID, taskID, traceID string) error {
+	m.activeMu.RLock()
+	operation, active := m.active[traceID]
+	m.activeMu.RUnlock()
+	if !active {
+		return nil
+	}
+	if operation.owner != userID {
+		return errors.New("expand operation owner mismatch")
+	}
+	return m.journal.releaseTaskBinding(operation.operationID, strings.TrimSpace(userID), strings.TrimSpace(taskID))
 }
 
 func (m *Manager) Start(parent context.Context) {
@@ -124,36 +148,36 @@ func (m *Manager) handle(c *gin.Context, upstream http.Handler, relativePath str
 func (m *Manager) handleIdempotentCreate(c *gin.Context, upstream http.Handler, relativePath string) {
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 16<<20))
 	if err != nil {
-		writeFacadeError(c, http.StatusBadRequest, "expand_openapi_invalid_body")
+		writeFacadeRequestRejected(c, http.StatusBadRequest, "expand_openapi_invalid_body")
 		return
 	}
 	var payload map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	if err := decoder.Decode(&payload); err != nil || payload == nil {
-		writeFacadeError(c, http.StatusBadRequest, "expand_openapi_invalid_body")
+		writeFacadeRequestRejected(c, http.StatusBadRequest, "expand_openapi_invalid_body")
 		return
 	}
 	rawClientOperationID, _ := payload["clientOperationId"].(string)
 	clientOperationID := strings.TrimSpace(rawClientOperationID)
 	if rawClientOperationID != clientOperationID || !validClientOperationID(clientOperationID) {
-		writeFacadeError(c, http.StatusBadRequest, "expand_openapi_client_operation_id_required")
+		writeFacadeRequestRejected(c, http.StatusBadRequest, "expand_openapi_client_operation_id_required")
 		return
 	}
 	delete(payload, "clientOperationId")
 	if relativePath == "/tasks" && !isSupportedDirectTask(payload) {
-		writeFacadeError(c, http.StatusBadRequest, "expand_openapi_task_type_not_allowed")
+		writeFacadeRequestRejected(c, http.StatusBadRequest, "expand_openapi_task_type_not_allowed")
 		return
 	}
 	cleanBody, err := json.Marshal(payload)
 	if err != nil {
-		writeFacadeError(c, http.StatusBadRequest, "expand_openapi_invalid_body")
+		writeFacadeRequestRejected(c, http.StatusBadRequest, "expand_openapi_invalid_body")
 		return
 	}
 	user, err := m.currentUser(c.Request)
 	if err != nil {
 		if isAccessDenied(err) {
-			m.dispatch(c, upstream, relativePath, body, "")
+			writeFacadeAccessRejected(c, err)
 			return
 		}
 		writeFacadeError(c, http.StatusServiceUnavailable, "expand_openapi_auth_unavailable")
@@ -185,7 +209,11 @@ func (m *Manager) handleIdempotentCreate(c *gin.Context, upstream http.Handler, 
 		return
 	}
 	if current, lookupErr := m.journal.operationByKey(user.ID, clientOperationID); lookupErr == nil {
-		m.projectTaskResponse(recorder, current)
+		if current.State == operationRejected && current.TaskID == "" {
+			markRecorderRejected(recorder)
+		} else {
+			m.projectTaskResponse(recorder, current)
+		}
 	}
 	copyRecordedResponse(c.Writer, recorder)
 }
@@ -210,7 +238,7 @@ func (m *Manager) replayOperation(c *gin.Context, upstream http.Handler, record 
 	if record.TaskID != "" {
 		if _, err := m.host.Task(record.UserID, record.TaskID); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				_ = m.journal.markUnknown(record.ID)
+				_ = m.journal.markUnknown(record.ID, record.TaskID)
 				writeFacadeError(c, http.StatusConflict, "expand_openapi_operation_unknown")
 			} else {
 				writeFacadeError(c, http.StatusServiceUnavailable, "expand_openapi_task_unavailable")
@@ -225,7 +253,12 @@ func (m *Manager) replayOperation(c *gin.Context, upstream http.Handler, record 
 		return
 	}
 	if record.State == operationRejected && record.ResponseStatus != 0 {
-		c.Data(record.ResponseStatus, "application/json; charset=utf-8", record.ResponseBody)
+		recorder := httptest.NewRecorder()
+		recorder.Code = record.ResponseStatus
+		recorder.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = recorder.Body.Write(record.ResponseBody)
+		markRecorderRejected(recorder)
+		copyRecordedResponse(c.Writer, recorder)
 		return
 	}
 	if record.State == operationUnknown {
@@ -236,7 +269,7 @@ func (m *Manager) replayOperation(c *gin.Context, upstream http.Handler, record 
 }
 
 func (m *Manager) handleTaskRecovery(c *gin.Context, upstream http.Handler, relativePath string) {
-	user, err := m.currentUser(c.Request)
+	_, err := m.currentUser(c.Request)
 	if err != nil {
 		if isAccessDenied(err) {
 			m.dispatch(c, upstream, relativePath, nil, "")
@@ -244,10 +277,6 @@ func (m *Manager) handleTaskRecovery(c *gin.Context, upstream http.Handler, rela
 		}
 		writeFacadeError(c, http.StatusServiceUnavailable, "expand_openapi_auth_unavailable")
 		return
-	}
-	parts := strings.Split(strings.Trim(relativePath, "/"), "/")
-	if len(parts) >= 3 {
-		_ = m.journal.resetDelivery(user.ID, parts[1])
 	}
 	m.dispatch(c, upstream, relativePath, nil, "")
 }
@@ -271,6 +300,15 @@ func (m *Manager) handleOperationQuery(c *gin.Context, upstream http.Handler, _ 
 		c.JSON(http.StatusOK, gin.H{"code": 0, "data": []any{}, "msg": "ok"})
 		return
 	}
+	if err == nil && record.State == operationRejected && record.TaskID == "" && record.ResponseStatus != 0 {
+		recorder := httptest.NewRecorder()
+		recorder.Code = record.ResponseStatus
+		recorder.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = recorder.Body.Write(record.ResponseBody)
+		markRecorderRejected(recorder)
+		copyRecordedResponse(c.Writer, recorder)
+		return
+	}
 	if err != nil || record.TaskID == "" {
 		writeFacadeError(c, http.StatusConflict, "expand_openapi_operation_unknown")
 		return
@@ -285,6 +323,56 @@ func (m *Manager) handleOperationQuery(c *gin.Context, upstream http.Handler, _ 
 		wrapEnvelopeDataAsArray(recorder)
 	}
 	copyRecordedResponse(c.Writer, recorder)
+}
+
+func writeFacadeRequestRejected(c *gin.Context, status int, reason string) {
+	c.AbortWithStatusJSON(status, gin.H{
+		"code": status, "data": nil, "msg": http.StatusText(status), "reason": reason,
+		"details": gin.H{"expandRequestState": operationRejected},
+	})
+}
+
+func writeFacadeAccessRejected(c *gin.Context, err error) {
+	status, code, reason, message := http.StatusUnauthorized, http.StatusUnauthorized, "unauthorized", http.StatusText(http.StatusUnauthorized)
+	details := map[string]any{"expandRequestState": operationRejected}
+	var appErr *kernel.AppError
+	if errors.As(err, &appErr) {
+		status = appErr.Status
+		code = appErr.Code
+		if code == 0 {
+			code = status
+		}
+		if appErr.Reason != "" {
+			reason = string(appErr.Reason)
+		}
+		if strings.TrimSpace(appErr.Message) != "" {
+			message = appErr.Message
+		}
+		for key, value := range appErr.Details {
+			details[key] = value
+		}
+	}
+	c.AbortWithStatusJSON(status, gin.H{"code": code, "data": nil, "msg": message, "reason": reason, "details": details})
+}
+
+func markRecorderRejected(recorder *httptest.ResponseRecorder) {
+	var envelope map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		return
+	}
+	details, _ := envelope["details"].(map[string]any)
+	if details == nil {
+		details = map[string]any{}
+	}
+	details["expandOperationState"] = operationRejected
+	envelope["details"] = details
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return
+	}
+	recorder.Body.Reset()
+	_, _ = recorder.Body.Write(body)
+	recorder.Header().Del("Content-Length")
 }
 
 func (m *Manager) handleProjectedWorkbenchTasks(c *gin.Context, upstream http.Handler, relativePath string) {

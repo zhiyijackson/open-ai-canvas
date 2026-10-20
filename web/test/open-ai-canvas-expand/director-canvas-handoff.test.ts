@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -13,6 +13,7 @@ import {
 } from "../../src/open-ai-canvas-expand/director-canvas-handoff";
 import { apiClient } from "../../src/services/api/request";
 import { useCanvasStore } from "../../src/stores/canvas/use-canvas-store";
+import * as canvasStoreModule from "../../src/stores/canvas/use-canvas-store";
 import { useAssetStore } from "../../src/stores/use-asset-store";
 
 const record: StoredDirectorHandoff = {
@@ -150,6 +151,35 @@ describe("director canvas handoff", () => {
 
         await expect(pending).rejects.toMatchObject({ name: "AbortError" });
         expect(useCanvasStore.getState().projects).toHaveLength(0);
+    });
+
+    test("retries the same canvas when post-create local persistence fails", async () => {
+        apiClient.defaults.adapter = async (config) => ({
+            config,
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            data: { code: 0, data: { resource: readyImage("director-persist-image") }, msg: "ok" },
+        });
+        const flush = spyOn(canvasStoreModule, "flushCanvasStorePersistence").mockRejectedValueOnce(new Error("local persistence unavailable"));
+        const input = {
+            contextId: "director-persist-retry",
+            prompt: "制作一支新品短片",
+            resources: [{ resourceId: "director-persist-image", kind: "image" as const }],
+        };
+
+        try {
+            await expect(startOrResumeDirectorHandoff(input)).rejects.toThrow("local persistence unavailable");
+            expect(useCanvasStore.getState().projects).toHaveLength(1);
+            const canvasId = useCanvasStore.getState().projects[0]!.id;
+
+            const resumed = await startOrResumeDirectorHandoff(input);
+            expect(resumed).toMatchObject({ canvasId, resumed: true });
+            expect(useCanvasStore.getState().projects).toHaveLength(1);
+            expect(flush).toHaveBeenCalledTimes(2);
+        } finally {
+            flush.mockRestore();
+        }
     });
 
     test("prepared handoff rejects changed input and directs the user to the original Agent", async () => {

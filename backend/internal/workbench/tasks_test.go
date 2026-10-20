@@ -63,6 +63,32 @@ func TestResolveVideoTaskOperationUsesReferenceRoles(t *testing.T) {
 	}
 }
 
+func TestNormalizeImageTaskParametersKeepsValidatedAdvancedSettings(t *testing.T) {
+	parameters, err := normalizeTaskParameters(KindImage, map[string]any{
+		"size": "1:1", "count": float64(2), "transparentBackground": true,
+		"imageParameters": map[string]any{"style": "natural", "steps": float64(12), "rawMode": false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parameters["transparentBackground"] != true {
+		t.Fatalf("transparentBackground = %#v", parameters["transparentBackground"])
+	}
+	imageParameters, ok := parameters["imageParameters"].(map[string]any)
+	if !ok || imageParameters["style"] != "natural" || imageParameters["steps"] != float64(12) || imageParameters["rawMode"] != false {
+		t.Fatalf("imageParameters = %#v", parameters["imageParameters"])
+	}
+
+	for _, invalid := range []map[string]any{
+		{"imageParameters": map[string]any{"nested": map[string]any{"secret": true}}},
+		{"imageParameters": map[string]any{"bad-name": "value"}},
+	} {
+		if _, err := normalizeTaskParameters(KindImage, invalid); err == nil {
+			t.Fatalf("invalid image parameters accepted: %#v", invalid)
+		}
+	}
+}
+
 func TestValidateTaskCapabilitiesInputContract(t *testing.T) {
 	capability := map[string]any{
 		"referenceKinds": []any{"image", "video"},
