@@ -2,11 +2,24 @@ package app
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"yingce/backend/internal/model"
+	"yingce/backend/internal/repository"
 )
+
+func TestTaskCreateDefiniteRejectionClassification(t *testing.T) {
+	for _, err := range []error{repository.ErrActiveTaskLimit, repository.ErrInsufficientCredits, repository.ErrLogicalModelUnavailable, QuotaExceeded("full")} {
+		if !taskCreateDefinitelyRejected(err) {
+			t.Fatalf("known refusal %v was not classified as definite", err)
+		}
+	}
+	if taskCreateDefinitelyRejected(errors.New("database connection lost")) {
+		t.Fatal("unknown storage failure was classified as a definite rejection")
+	}
+}
 
 func TestAgentMediaAdmissionPersistsOriginAndChargeAuthorization(t *testing.T) {
 	s, _, args := agentMediaFixture(t)
@@ -81,6 +94,33 @@ func TestOrdinaryFailedAndCancelledTasksKeepRetryIdentity(t *testing.T) {
 		if _, err = s.RetryTask(task.UserID, task.ID); err == nil {
 			t.Fatal("queued retry was accepted a second time")
 		}
+	}
+}
+
+func TestOrdinaryTaskRetryObserverRunsAfterQueuedCommit(t *testing.T) {
+	s, db, _ := agentMediaFixture(t)
+	task := model.Task{ID: "ordinary-observed", UserID: "user", Type: "canvas_text", Operation: "text", Status: model.TaskStatusFailed, InputJSON: `{}`}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	observed := false
+	s.SetTaskRetryObserver(func(userID, taskID string) {
+		stored, err := s.repo.TaskForUser(userID, taskID)
+		if err != nil {
+			t.Errorf("observer could not read retried task: %v", err)
+			return
+		}
+		if stored.Status != model.TaskStatusQueued {
+			t.Errorf("observer saw status %q, want queued", stored.Status)
+			return
+		}
+		observed = true
+	})
+	if _, err := s.RetryTask(task.UserID, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !observed {
+		t.Fatal("retry observer was not notified")
 	}
 }
 

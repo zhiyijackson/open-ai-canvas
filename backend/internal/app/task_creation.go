@@ -216,6 +216,11 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		}
 	}
 	err = s.createTaskWithinStorageQuota(&task, billingOrder, policy)
+	if taskCreateDefinitelyRejected(err) && s.taskCreateRejectedObserver != nil {
+		if observerErr := s.taskCreateRejectedObserver(userID, task.ID, task.TraceID); observerErr != nil {
+			return nil, observerErr
+		}
+	}
 	if errors.Is(err, repository.ErrActiveTaskLimit) {
 		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 	}
@@ -235,6 +240,14 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		s.supersedeCloudAgentApprovalsForNodeTask(userID, &task, normalizedInput)
 	}
 	return taskForOutput(task), nil
+}
+
+func taskCreateDefinitelyRejected(err error) bool {
+	if errors.Is(err, repository.ErrActiveTaskLimit) || errors.Is(err, repository.ErrInsufficientCredits) || errors.Is(err, repository.ErrLogicalModelUnavailable) {
+		return true
+	}
+	var appErr *AppError
+	return errors.As(err, &appErr) && appErr.Reason == ReasonQuotaExceeded
 }
 
 // resolveTaskModelSelection 根据请求实际携带的模型选择决定路由方式。

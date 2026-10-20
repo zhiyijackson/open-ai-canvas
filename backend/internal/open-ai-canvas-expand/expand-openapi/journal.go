@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"yingce/backend/internal/database"
+	"yingce/backend/internal/model"
 
 	"gorm.io/gorm"
 )
@@ -28,23 +29,25 @@ const (
 )
 
 type operationRecord struct {
-	ID                string `gorm:"primaryKey;size:48"`
-	UserID            string `gorm:"size:36;not null;uniqueIndex:idx_expand_operation_owner_key,priority:1;index"`
-	ClientOperationID string `gorm:"size:160;not null;uniqueIndex:idx_expand_operation_owner_key,priority:2"`
-	Fingerprint       string `gorm:"size:64;not null"`
-	TraceID           string `gorm:"size:96;not null;uniqueIndex"`
-	Kind              string `gorm:"size:16;not null"`
-	TaskID            string `gorm:"size:36;index"`
-	State             string `gorm:"size:24;not null;index"`
-	ResponseStatus    int
-	ResponseBody      []byte    `gorm:"type:blob"`
-	ExpectedOutputs   int       `gorm:"not null;default:0"`
-	DeliveryState     string    `gorm:"size:24;not null;default:pending;index"`
-	DeliveryAttempts  int       `gorm:"not null;default:0"`
-	DeliveryErrorCode string    `gorm:"size:80"`
-	NextAttemptAt     time.Time `gorm:"index"`
-	CreatedAt         time.Time `gorm:"not null"`
-	UpdatedAt         time.Time `gorm:"not null"`
+	ID                    string `gorm:"primaryKey;size:48"`
+	UserID                string `gorm:"size:36;not null;uniqueIndex:idx_expand_operation_owner_key,priority:1;index"`
+	ClientOperationID     string `gorm:"size:160;not null;uniqueIndex:idx_expand_operation_owner_key,priority:2"`
+	Fingerprint           string `gorm:"size:64;not null"`
+	TraceID               string `gorm:"size:96;not null;uniqueIndex"`
+	Kind                  string `gorm:"size:16;not null"`
+	TaskID                string `gorm:"size:36;index"`
+	State                 string `gorm:"size:24;not null;index"`
+	ResponseStatus        int
+	ResponseBody          []byte `gorm:"type:blob"`
+	ExpectedOutputs       int    `gorm:"not null;default:0"`
+	DeliveryState         string `gorm:"size:24;not null;default:pending;index"`
+	DeliveryAttempts      int    `gorm:"not null;default:0"`
+	DeliveryErrorCode     string `gorm:"size:80"`
+	DeliveryRouteRun      int    `gorm:"not null;default:0"`
+	DeliveryTaskUpdatedAt time.Time
+	NextAttemptAt         time.Time `gorm:"index"`
+	CreatedAt             time.Time `gorm:"not null"`
+	UpdatedAt             time.Time `gorm:"not null"`
 }
 
 type outputRecord struct {
@@ -154,6 +157,19 @@ func (j *journal) bindTask(operationID, userID, taskID string) error {
 	})
 }
 
+func (j *journal) releaseTaskBinding(operationID, userID, taskID string) error {
+	result := j.db.Model(&operationRecord{}).
+		Where("id = ? AND user_id = ? AND task_id = ? AND state IN ?", operationID, userID, taskID, []string{operationBound, operationUnknown}).
+		Updates(map[string]any{"task_id": "", "state": operationCreating, "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("expand operation task binding changed before rejection")
+	}
+	return nil
+}
+
 func (j *journal) saveResponse(id string, status int, body []byte) error {
 	state := operationRejected
 	if status >= 200 && status < 300 {
@@ -166,14 +182,42 @@ func (j *journal) saveResponse(id string, status int, body []byte) error {
 }
 
 func (j *journal) resetDelivery(userID, taskID string) error {
-	return j.db.Model(&operationRecord{}).Where("user_id = ? AND task_id = ?", userID, taskID).Updates(map[string]any{
+	return j.db.Transaction(func(tx *gorm.DB) error {
+		var records []operationRecord
+		if err := tx.Where("user_id = ? AND task_id = ?", userID, taskID).Find(&records).Error; err != nil {
+			return err
+		}
+		for _, record := range records {
+			if err := resetDeliveryTx(tx, record.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (j *journal) resetDeliveryRecord(id string) error {
+	return j.db.Transaction(func(tx *gorm.DB) error { return resetDeliveryTx(tx, id) })
+}
+
+func resetDeliveryTx(tx *gorm.DB, id string) error {
+	// Records that prove a host write may have happened are immutable
+	// tombstones. Only pre-write failures can be retried with a recovered output.
+	if err := tx.Where("operation_id = ? AND (state = ? OR (state = ? AND error_code IN ?))",
+		id, outputPrepared, outputUnavailable, []string{"resource_missing", "resource_unavailable", "asset_payload_invalid"}).
+		Delete(&outputRecord{}).Error; err != nil {
+		return err
+	}
+	return tx.Model(&operationRecord{}).Where("id = ?", id).Updates(map[string]any{
 		"delivery_state": "pending", "delivery_attempts": 0, "delivery_error_code": "",
 		"next_attempt_at": time.Now().UTC(), "updated_at": time.Now().UTC(),
 	}).Error
 }
 
-func (j *journal) markUnknown(id string) error {
-	return j.db.Model(&operationRecord{}).Where("id = ?", id).Updates(map[string]any{"state": operationUnknown, "updated_at": time.Now().UTC()}).Error
+func (j *journal) markUnknown(id, taskID string) error {
+	return j.db.Model(&operationRecord{}).
+		Where("id = ? AND task_id = ? AND state <> ?", id, taskID, operationRejected).
+		Updates(map[string]any{"state": operationUnknown, "updated_at": time.Now().UTC()}).Error
 }
 
 func (j *journal) operationByTask(userID, taskID string) (*operationRecord, error) {
@@ -194,11 +238,11 @@ func (j *journal) operationByKey(userID, clientOperationID string) (*operationRe
 
 func (j *journal) activeOperations() ([]operationRecord, error) {
 	var records []operationRecord
-	err := j.db.Where("task_id <> '' AND delivery_state = ? AND next_attempt_at <= ?", "pending", time.Now().UTC()).Order("next_attempt_at ASC, id ASC").Limit(100).Find(&records).Error
+	err := j.db.Where("task_id <> '' AND next_attempt_at <= ?", time.Now().UTC()).Order("next_attempt_at ASC, id ASC").Limit(100).Find(&records).Error
 	return records, err
 }
 
-func (j *journal) scheduleDelivery(id string, delay time.Duration) error {
+func (j *journal) scheduleDelivery(id string, delay time.Duration, task *model.Task) error {
 	return j.db.Transaction(func(tx *gorm.DB) error {
 		var record operationRecord
 		if err := tx.First(&record, "id = ?", id).Error; err != nil {
@@ -208,6 +252,9 @@ func (j *journal) scheduleDelivery(id string, delay time.Duration) error {
 		if record.DeliveryAttempts+1 >= 12 {
 			updates["delivery_state"] = "failed"
 			updates["delivery_error_code"] = "materialization_retry_exhausted"
+			updates["delivery_route_run"] = task.RouteRun
+			updates["delivery_task_updated_at"] = task.UpdatedAt
+			updates["next_attempt_at"] = time.Now().UTC().Add(30 * time.Second)
 		}
 		return tx.Model(&operationRecord{}).Where("id = ?", id).Updates(updates).Error
 	})
@@ -221,13 +268,29 @@ func (j *journal) deferDelivery(id string, delay time.Duration) error {
 
 func (j *journal) completeDelivery(id string) error {
 	return j.db.Model(&operationRecord{}).Where("id = ?", id).Updates(map[string]any{
-		"delivery_state": "complete", "delivery_error_code": "", "updated_at": time.Now().UTC(),
+		"delivery_state": "complete", "delivery_error_code": "", "next_attempt_at": time.Now().UTC().Add(30 * time.Second), "updated_at": time.Now().UTC(),
 	}).Error
+}
+
+func (j *journal) completeDeliveryForTask(id string, task *model.Task) error {
+	return j.finishDeliveryForTask(id, "complete", "", task)
 }
 
 func (j *journal) failDelivery(id, code string) error {
 	return j.db.Model(&operationRecord{}).Where("id = ?", id).Updates(map[string]any{
-		"delivery_state": "failed", "delivery_error_code": code, "updated_at": time.Now().UTC(),
+		"delivery_state": "failed", "delivery_error_code": code, "next_attempt_at": time.Now().UTC().Add(30 * time.Second), "updated_at": time.Now().UTC(),
+	}).Error
+}
+
+func (j *journal) failDeliveryForTask(id, code string, task *model.Task) error {
+	return j.finishDeliveryForTask(id, "failed", code, task)
+}
+
+func (j *journal) finishDeliveryForTask(id, state, code string, task *model.Task) error {
+	return j.db.Model(&operationRecord{}).Where("id = ?", id).Updates(map[string]any{
+		"delivery_state": state, "delivery_error_code": code,
+		"delivery_route_run": task.RouteRun, "delivery_task_updated_at": task.UpdatedAt,
+		"next_attempt_at": time.Now().UTC().Add(30 * time.Second), "updated_at": time.Now().UTC(),
 	}).Error
 }
 

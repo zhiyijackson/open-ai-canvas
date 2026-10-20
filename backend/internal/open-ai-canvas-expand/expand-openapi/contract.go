@@ -258,7 +258,7 @@ func contractSchemas() map[string]any {
 		}, "resourceId", "kind")},
 	}, "clientOperationId", "kind", "prompt")
 	directTaskInput := openObject(map[string]any{
-		"clientOperationId": stringSchema(), "type": stringSchema(), "operation": stringSchema(),
+		"clientOperationId": stringSchema(), "type": map[string]any{"type": "string", "enum": []string{"canvas_image", "canvas_video"}}, "operation": stringSchema(),
 		"prompt": stringSchema(), "provider": stringSchema(), "model": stringSchema(),
 		"logicalModelId": stringSchema(), "projectId": stringSchema(),
 		"input": map[string]any{"type": "object", "additionalProperties": true},
@@ -271,6 +271,10 @@ func contractSchemas() map[string]any {
 	return map[string]any{
 		"ErrorEnvelope": openObject(map[string]any{
 			"code": map[string]any{"type": "integer"}, "data": map[string]any{"nullable": true}, "msg": stringSchema(), "reason": stringSchema(),
+			"details": openObject(map[string]any{
+				"expandOperationState": map[string]any{"type": "string", "enum": []string{"rejected"}, "description": "The journal confirms this operation was not accepted; its frozen submission may be released."},
+				"expandRequestState":   map[string]any{"type": "string", "enum": []string{"rejected"}, "description": "This request was not dispatched; an earlier attempt with the same key remains unknown."},
+			}),
 		}, "code", "data", "msg"),
 		"GenericSuccessEnvelope": successEnvelopeSchema(map[string]any{"type": "object", "additionalProperties": true}),
 		"TaskSummary":            task, "TaskDetail": taskDetail, "WorkbenchTaskInput": workbenchInput, "DirectTaskInput": directTaskInput, "WorkbenchTool": workbenchTool,

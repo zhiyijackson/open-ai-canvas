@@ -117,15 +117,19 @@ func TestResolveWorkbenchProviderConfigMapsWorkbenchParameters(t *testing.T) {
 	service := &Service{}
 
 	image, err := service.resolveWorkbenchProviderConfig(WorkbenchKindImage, "image", "image-model", "logical-image", "", map[string]any{
-		"size": "1024x1024", "quality": "high", "imageResolution": "2k", "count": 2,
+		"size": "1024x1024", "quality": "high", "imageResolution": "2k", "count": 2, "transparentBackground": true,
+		"imageParameters": map[string]any{"style": "natural", "steps": float64(12)},
 	}, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for key, want := range map[string]any{"model": "image-model", "size": "1024x1024", "quality": "high", "imageResolution": "2k", "count": "2"} {
+	for key, want := range map[string]any{"model": "image-model", "size": "1024x1024", "quality": "high", "imageResolution": "2k", "count": "2", "transparentBackground": "true"} {
 		if image[key] != want {
 			t.Errorf("image config[%q] = %#v, want %#v", key, image[key], want)
 		}
+	}
+	if parameters, ok := image["imageParameters"].(map[string]any); !ok || parameters["style"] != "natural" || parameters["steps"] != float64(12) {
+		t.Fatalf("image config imageParameters = %#v", image["imageParameters"])
 	}
 
 	video, err := service.resolveWorkbenchProviderConfig(WorkbenchKindVideo, "text_to_video", "video-model", "logical-video", "", map[string]any{

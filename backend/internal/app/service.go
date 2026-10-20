@@ -92,20 +92,22 @@ type Service struct {
 	disablePiRuntime bool
 	// legacyCloudAgentRootTask is enabled only by tests that exercise the pre-Pi
 	// model-worker path. Runtime availability must not change root task semantics.
-	legacyCloudAgentRootTask bool
-	approvedMediaMu          sync.Mutex
-	approvedMediaWg          sync.WaitGroup
-	approvedMediaWaiters     map[string]context.CancelFunc
-	approvedMediaClosed      bool
-	providerCatalogOnce      sync.Once
-	providerCatalog          *providercatalog.Source
-	creditPolicyMu           sync.RWMutex
-	creditPolicyCache        *CreditPolicy
-	creditPolicyAt           time.Time
-	modelAvailabilityMu      sync.RWMutex
-	modelAvailabilityCache   map[publicModelAvailabilityKey]*PublicModelAvailability
-	modelAvailabilityAt      time.Time
-	taskCreateObserver       func(userID, taskID, traceID string) error
+	legacyCloudAgentRootTask   bool
+	approvedMediaMu            sync.Mutex
+	approvedMediaWg            sync.WaitGroup
+	approvedMediaWaiters       map[string]context.CancelFunc
+	approvedMediaClosed        bool
+	providerCatalogOnce        sync.Once
+	providerCatalog            *providercatalog.Source
+	creditPolicyMu             sync.RWMutex
+	creditPolicyCache          *CreditPolicy
+	creditPolicyAt             time.Time
+	modelAvailabilityMu        sync.RWMutex
+	modelAvailabilityCache     map[publicModelAvailabilityKey]*PublicModelAvailability
+	modelAvailabilityAt        time.Time
+	taskCreateObserver         func(userID, taskID, traceID string) error
+	taskCreateRejectedObserver func(userID, taskID, traceID string) error
+	taskRetryObserver          func(userID, taskID string)
 }
 
 // SetTaskCreateObserver installs the optional additive integration checkpoint
@@ -113,6 +115,18 @@ type Service struct {
 // transaction. The observer must not mutate host task or billing state.
 func (s *Service) SetTaskCreateObserver(observer func(userID, taskID, traceID string) error) {
 	s.taskCreateObserver = observer
+}
+
+// SetTaskCreateRejectedObserver installs compensation for the narrow set of
+// host transaction refusals that prove no task or billing order committed.
+func (s *Service) SetTaskCreateRejectedObserver(observer func(userID, taskID, traceID string) error) {
+	s.taskCreateRejectedObserver = observer
+}
+
+// SetTaskRetryObserver installs an additive notification after a task retry or
+// media-recovery requeue has committed and the task is visible as queued.
+func (s *Service) SetTaskRetryObserver(observer func(userID, taskID string)) {
+	s.taskRetryObserver = observer
 }
 
 const taskWorkerConcurrency = 3
