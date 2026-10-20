@@ -28,7 +28,7 @@
         "@fontsource-variable/jetbrains-mono": "^5.3.0",
         "@lobehub/icons": "5.16.0",
         "@mediapipe/tasks-vision": "^1.0.1",
-        "@open-ai-canvas/expand": "file:src/open-ai-canvas-expand/vendor/open-ai-canvas-expand-0.1.0-d77049c46704.tgz",
+        "@open-ai-canvas/expand": "file:src/open-ai-canvas-expand/vendor/open-ai-canvas-expand-0.1.0-c0d86f0062f4.tgz",
         "@react-three/drei": "^10.7.7",
         "@react-three/fiber": "^9.6.1",
         "@streamdown/code": "^1.1.1",

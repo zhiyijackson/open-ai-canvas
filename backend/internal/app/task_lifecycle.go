@@ -101,6 +101,9 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 	if err != nil {
 		return nil, err
 	}
+	if s.taskRetryObserver != nil {
+		s.taskRetryObserver(userID, task.ID)
+	}
 	_ = s.log(userID, task.ID, "info", "任务已重新入队", "")
 	return taskForOutput(*task), nil
 }

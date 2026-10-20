@@ -4,11 +4,13 @@ import {
     clearWorkbenchMaskPendingSubmission,
     clearWorkbenchPendingSubmission,
     clearWorkbenchDraftsForScope,
+    createWorkbenchRestoreCoordinator,
     readWorkbenchDraft,
     readWorkbenchMaskPendingSubmission,
     readWorkbenchPendingSubmission,
     registerWorkbenchSessionAbort,
     sameWorkbenchDraft,
+    sameWorkbenchComposerDraft,
     tryLockWorkbenchSubmission,
     unlockWorkbenchSubmission,
     writeWorkbenchDraft,
@@ -53,6 +55,31 @@ describe("workbench session drafts", () => {
         expect(sameWorkbenchDraft(imageDraft, { ...imageDraft })).toBe(true);
         expect(sameWorkbenchDraft(imageDraft, { ...imageDraft, model: "other-model" })).toBe(false);
         expect(sameWorkbenchDraft(imageDraft, { ...imageDraft, references: [] })).toBe(false);
+    });
+
+    test("compares model and advanced settings while ignoring director-only session state", () => {
+        expect(sameWorkbenchComposerDraft(imageDraft, { ...imageDraft, directorContextId: "director-a", directorLanguage: "zh-CN" })).toBe(true);
+        expect(sameWorkbenchComposerDraft(imageDraft, { ...imageDraft, model: "other-model" })).toBe(false);
+        expect(sameWorkbenchComposerDraft(imageDraft, { ...imageDraft, parameters: { ...imageDraft.parameters, transparentBackground: "true" } })).toBe(false);
+        expect(sameWorkbenchComposerDraft(imageDraft, { ...imageDraft, parameters: { ...imageDraft.parameters, imageParameters: '{"style":"natural"}' } })).toBe(false);
+    });
+
+    test("allows only the latest history restore while the draft revision is unchanged", () => {
+        let revision = 0;
+        const coordinator = createWorkbenchRestoreCoordinator(() => revision);
+        const first = coordinator.start();
+        const second = coordinator.start();
+
+        expect(first.isCurrent()).toBe(false);
+        expect(second.isCurrent()).toBe(true);
+
+        revision += 1;
+        expect(second.isCurrent()).toBe(false);
+
+        const third = coordinator.start();
+        expect(third.isCurrent()).toBe(true);
+        coordinator.invalidate();
+        expect(third.isCurrent()).toBe(false);
     });
 
     test("keeps a frozen pending request across same-session route remounts", () => {

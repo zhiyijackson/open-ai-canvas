@@ -260,7 +260,9 @@ export async function startOrResumeDirectorHandoff(input: StartDirectorHandoffIn
                 throw new Error(`该编导任务已进入原 Agent 会话；修改需求请前往画布 ${stored.canvasId} 的 Agent 继续对话`);
             }
             await validateAssetReferences(normalized.assetIds, normalized.resources.some((item) => item.kind === "image"), scope, epoch);
-            const project = await loadCanvasProjectForEditing(stored.canvasId);
+            // 创建后的 flush 失败时画布仍在当前 store；优先复用，避免远端尚未观察到该画布时重复创建。
+            const localProject = stored.preparedAt ? null : useCanvasStore.getState().openProject(stored.canvasId);
+            const project = localProject || (await loadCanvasProjectForEditing(stored.canvasId));
             assertSession(scope, epoch);
             if (!project) throw new Error("关联画布已不存在，请恢复画布或新建编导任务");
             const next = stored.preparedAt
@@ -275,6 +277,10 @@ export async function startOrResumeDirectorHandoff(input: StartDirectorHandoffIn
                   };
             assertSession(scope, epoch);
             if (next !== stored) await saveStored(next, scope, epoch);
+            if (localProject) {
+                await flushCanvasStorePersistence();
+                assertSession(scope, epoch);
+            }
             return { canvasId: next.canvasId, path: navigationPath(next), resumed: true };
         }
 
@@ -284,7 +290,6 @@ export async function startOrResumeDirectorHandoff(input: StartDirectorHandoffIn
         assertSession(scope, epoch);
         const title = normalized.prompt.replace(/\s+/gu, " ").slice(0, 28) || "超级编导";
         const created = await createCanvasProjectWithRemoteSync(title);
-        await flushCanvasStorePersistence();
         assertSession(scope, epoch);
         const record: StoredDirectorHandoff = {
             version: 1,
@@ -298,6 +303,8 @@ export async function startOrResumeDirectorHandoff(input: StartDirectorHandoffIn
             createdAt: new Date().toISOString(),
         };
         await saveStored(record, scope, epoch);
+        await flushCanvasStorePersistence();
+        assertSession(scope, epoch);
         return { canvasId: record.canvasId, path: navigationPath(record), resumed: false, syncError: created.syncError };
     })().finally(() => {
         if (inFlight.get(operationKey) === operation) inFlight.delete(operationKey);

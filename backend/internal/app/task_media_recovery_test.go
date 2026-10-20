@@ -247,9 +247,21 @@ func TestMediaRecoveryFencesLeasesCancellationAndManualRetries(t *testing.T) {
 	if _, err := s.RecoverTaskMedia("other-user", task.ID); err == nil {
 		t.Fatal("cross-user recovery")
 	}
+	observed := false
+	s.SetTaskRetryObserver(func(userID, taskID string) {
+		stored, readErr := s.repo.TaskForUser(userID, taskID)
+		if readErr != nil || stored.Status != model.TaskStatusQueued {
+			t.Errorf("media recovery observer saw task=%+v err=%v", stored, readErr)
+			return
+		}
+		observed = true
+	})
 	queued, err := s.RecoverTaskMedia(task.UserID, task.ID)
 	if err != nil || queued.ID != task.ID {
 		t.Fatalf("manual recovery: %v", err)
+	}
+	if !observed {
+		t.Fatal("media recovery did not notify task retry observer")
 	}
 	duplicate, err := s.RecoverTaskMedia(task.UserID, task.ID)
 	if err != nil || duplicate.ID != task.ID {

@@ -109,6 +109,19 @@ function fingerprint(input: object) {
     return JSON.stringify(submissionPayload(input));
 }
 
+const rejectedFreshSubmissions = new WeakSet<object>();
+
+function rejectionDetails(error: unknown): Record<string, unknown> | undefined {
+    if (typeof error !== "object" || error === null || !("details" in error) || typeof error.details !== "object" || error.details === null) return;
+    return error.details as Record<string, unknown>;
+}
+
+export function isExpandSubmissionRejected(error: unknown): boolean {
+    // HTTP status alone cannot establish whether a paid task was already bound.
+    return rejectionDetails(error)?.expandOperationState === "rejected" ||
+        (typeof error === "object" && error !== null && rejectedFreshSubmissions.has(error));
+}
+
 export function createExpandWorkbenchRuntime(kind: WorkbenchKind, scope: string): WorkbenchRuntime {
     const epoch = workbenchSessionEpoch(scope);
     const assertScope = () => {
@@ -149,7 +162,27 @@ export function createExpandWorkbenchRuntime(kind: WorkbenchKind, scope: string)
             return { id: created.id };
         } catch (error) {
             assertScope();
-            const [accepted] = await inSession((signal) => listExpandTasks(kind, 1, false, signal, clientOperationId)).catch(() => []);
+            const releaseRejected = (failure: unknown, fromSubmission = false) => {
+                assertScope();
+                // A rejected recovery request says nothing about the earlier attempt.
+                // Only a fresh submission can use the pre-dispatch disposition.
+                if (fromSubmission && !existing && rejectionDetails(failure)?.expandRequestState === "rejected") {
+                    rejectedFreshSubmissions.add(failure as object);
+                }
+                if (!isExpandSubmissionRejected(failure)) return false;
+                if (readWorkbenchPendingSubmission(scope, kind)?.clientOperationId === clientOperationId) {
+                    clearWorkbenchPendingSubmission(scope, kind);
+                }
+                return true;
+            };
+            if (releaseRejected(error, true)) throw error;
+            let accepted: ExpandGenerationTask | undefined;
+            try {
+                [accepted] = await inSession((signal) => listExpandTasks(kind, 1, false, signal, clientOperationId));
+            } catch (lookupError) {
+                if (releaseRejected(lookupError)) throw lookupError;
+            }
+            assertScope();
             if (accepted) {
                 writeWorkbenchPendingSubmission(scope, kind, { ...pending, acceptedTaskId: accepted.id });
                 return { id: accepted.id };

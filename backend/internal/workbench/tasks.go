@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -231,7 +232,7 @@ func videoOperation(refs []TaskReference) string {
 
 func normalizeTaskParameters(kind string, params map[string]any) (map[string]any, error) {
 	allowed := map[string]map[string]bool{
-		KindImage: {"size": true, "quality": true, "imageResolution": true, "count": true},
+		KindImage: {"size": true, "quality": true, "imageResolution": true, "count": true, "transparentBackground": true, "imageParameters": true},
 		KindVideo: {"seconds": true, "ratio": true, "resolution": true, "generateAudio": true, "watermark": true},
 	}[kind]
 	if allowed == nil {
@@ -262,15 +263,46 @@ func normalizeTaskParameters(kind string, params map[string]any) (map[string]any
 				return nil, kernel.BadAuthRequest("生成参数数值无效: " + key)
 			}
 			normalized[key] = number
-		case "generateAudio", "watermark":
+		case "generateAudio", "watermark", "transparentBackground":
 			flag, ok := value.(bool)
 			if !ok {
 				return nil, kernel.BadAuthRequest("生成参数格式无效: " + key)
 			}
 			normalized[key] = flag
+		case "imageParameters":
+			values, ok := value.(map[string]any)
+			if !ok {
+				return nil, kernel.BadAuthRequest("生成参数格式无效: " + key)
+			}
+			for name, item := range values {
+				if !workbenchImageParameterName.MatchString(name) || !validWorkbenchImageParameterValue(item) {
+					return nil, kernel.BadAuthRequest("图片扩展参数格式无效: " + name)
+				}
+			}
+			normalized[key] = values
 		}
 	}
 	return normalized, nil
+}
+
+var workbenchImageParameterName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
+
+func validWorkbenchImageParameterValue(value any) bool {
+	switch item := value.(type) {
+	case string:
+		return true
+	case bool:
+		return true
+	case float64:
+		return !math.IsNaN(item) && !math.IsInf(item, 0)
+	case json.Number:
+		value, err := item.Float64()
+		return err == nil && !math.IsNaN(value) && !math.IsInf(value, 0)
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	default:
+		return false
+	}
 }
 
 func taskParameterInteger(value any) (int, bool) {

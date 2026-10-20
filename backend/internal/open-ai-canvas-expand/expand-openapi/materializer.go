@@ -21,7 +21,11 @@ type mediaOutput struct {
 	ResourceID string
 }
 
+const missingResourceGracePeriod = 30 * time.Second
+
 func (m *Manager) materializeReadyTasks() {
+	m.deliveryMu.Lock()
+	defer m.deliveryMu.Unlock()
 	records, err := m.journal.activeOperations()
 	if err != nil {
 		return
@@ -31,15 +35,26 @@ func (m *Manager) materializeReadyTasks() {
 		task, err := m.host.Task(record.UserID, record.TaskID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) && time.Since(record.CreatedAt) >= 30*time.Second {
-				_ = m.journal.markUnknown(record.ID)
+				_ = m.journal.markUnknown(record.ID, record.TaskID)
 				_ = m.journal.failDelivery(record.ID, "operation_task_missing")
 			} else {
 				_ = m.journal.deferDelivery(record.ID, 5*time.Second)
 			}
 			continue
 		}
+		if record.DeliveryState != "pending" {
+			newerRun := task.RouteRun > record.DeliveryRouteRun
+			newerRecoverableState := task.Status != model.TaskStatusFailed && task.Status != model.TaskStatusCancelled && task.UpdatedAt.After(record.DeliveryTaskUpdatedAt)
+			if newerRun || newerRecoverableState {
+				_ = m.journal.resetDeliveryRecord(record.ID)
+				record.DeliveryState = "pending"
+			} else {
+				_ = m.journal.deferDelivery(record.ID, 30*time.Second)
+				continue
+			}
+		}
 		if task.Status == model.TaskStatusFailed || task.Status == model.TaskStatusCancelled {
-			_ = m.journal.completeDelivery(record.ID)
+			_ = m.journal.completeDeliveryForTask(record.ID, task)
 			continue
 		}
 		if task.Status != model.TaskStatusSucceeded {
@@ -48,7 +63,7 @@ func (m *Manager) materializeReadyTasks() {
 		}
 		outputs, err := mediaOutputs(*task)
 		if err != nil {
-			_ = m.journal.scheduleDelivery(record.ID, 5*time.Second)
+			_ = m.journal.scheduleDelivery(record.ID, 5*time.Second, task)
 			continue
 		}
 		_ = m.journal.setExpectedOutputs(record.ID, len(outputs))
@@ -91,9 +106,9 @@ func (m *Manager) materializeReadyTasks() {
 			failureCode = "materialization_failed"
 		}
 		if failureCode != "" && allTerminal {
-			_ = m.journal.failDelivery(record.ID, failureCode)
+			_ = m.journal.failDeliveryForTask(record.ID, failureCode, task)
 		} else if allBound {
-			_ = m.journal.completeDelivery(record.ID)
+			_ = m.journal.completeDeliveryForTask(record.ID, task)
 		} else {
 			_ = m.journal.deferDelivery(record.ID, 5*time.Second)
 		}
@@ -103,15 +118,6 @@ func (m *Manager) materializeReadyTasks() {
 func (m *Manager) materializeOutput(operation *operationRecord, task *model.Task, output mediaOutput) {
 	if output.ResourceID == "" {
 		m.recordUnavailableOutput(operation, task, output, "resource_missing")
-		return
-	}
-	resource, err := m.host.Resource(task.UserID, output.ResourceID)
-	if err != nil || resource.Status == model.ResourceStatusPending {
-		// No host write was attempted, so a later pass may safely retry this read.
-		return
-	}
-	if resource.Status != model.ResourceStatusReady {
-		m.recordUnavailableOutput(operation, task, output, "resource_unavailable")
 		return
 	}
 	assetID := generatedAssetID(task.ID, output.Index)
@@ -126,6 +132,21 @@ func (m *Manager) materializeOutput(operation *operationRecord, task *model.Task
 		return
 	}
 	if record.State == outputBound || record.State == outputUnavailable {
+		return
+	}
+	resource, err := m.host.Resource(task.UserID, output.ResourceID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if time.Since(record.CreatedAt) >= missingResourceGracePeriod {
+			m.markOutputUnavailable(record.ID, "resource_missing")
+		}
+		return
+	}
+	if err != nil || resource.Status == model.ResourceStatusPending {
+		// No host write was attempted, so a later pass may safely retry this read.
+		return
+	}
+	if resource.Status != model.ResourceStatusReady {
+		m.markOutputUnavailable(record.ID, "resource_unavailable")
 		return
 	}
 	if existing, err := m.host.UserAsset(task.UserID, assetID); err == nil {
@@ -155,7 +176,8 @@ func (m *Manager) materializeOutput(operation *operationRecord, task *model.Task
 		return
 	}
 	if _, err := m.host.UpsertUserAsset(task.UserID, payload); err != nil {
-		m.markOutputUnavailable(record.ID, "asset_write_failed")
+		// The host may have committed the asset before the response was lost.
+		// Keep the persisted write intent and reconcile by ID on the next pass.
 		return
 	}
 	m.markOutputBound(record.ID)

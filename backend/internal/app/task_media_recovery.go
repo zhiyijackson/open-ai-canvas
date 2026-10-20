@@ -380,6 +380,9 @@ func (s *Service) RecoverTaskMedia(userID, id string) (*model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.taskRetryObserver != nil {
+		s.taskRetryObserver(userID, next.ID)
+	}
 	return taskForOutput(*next), nil
 }
 

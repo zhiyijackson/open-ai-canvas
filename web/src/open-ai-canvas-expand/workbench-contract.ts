@@ -63,6 +63,7 @@ export type WorkbenchSurfaceController = {
     resultUrl: string;
     estimateLabel: string;
     parameters: Record<string, string>;
+    draftReady: boolean;
     mobileTab: string;
     setMobileTab(value: string): void;
     setPrompt(value: string | ((current: string) => string)): void;
@@ -85,7 +86,7 @@ export type WorkbenchSurfaceController = {
     cancelTask(task: ExpandGenerationTask): Promise<void>;
     retryTask(task: ExpandGenerationTask): Promise<void>;
     recoverTaskMedia(task: ExpandGenerationTask): Promise<void>;
-    openTask(task: ExpandGenerationTask): Promise<void>;
+    openTask(task: ExpandGenerationTask): Promise<{ parameters: Record<string, unknown> } | null>;
     taskModelLabel(task: ExpandGenerationTask): string;
 };
 
