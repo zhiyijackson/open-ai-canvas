@@ -75,6 +75,8 @@ import { AgentContextRing, AgentConversation, AgentHeader, AgentHistory, AgentLa
 import { AgentConnectorsBar } from "./canvas-cloud-agent-connectors";
 import { useGlobalAgentStore, type AgentPrefillRequest } from "@/stores/use-global-agent-store";
 
+export type CloudAgentPrefillRequest = AgentPrefillRequest;
+
 type AgentPanelView = "chat" | "history" | "settings";
 
 function approvalStateFromRun(nextRun: AgentRun | null): ApprovalState | null {
@@ -102,6 +104,7 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
     const selectedNodeIds = canvasContext?.selectedNodeIds ?? EMPTY_IDS;
     const references = canvasContext?.references ?? EMPTY_REFERENCES;
     const prefillRequest = canvasContext?.prefillRequest ?? null;
+    const onPrefillPendingPersisted = canvasContext?.onPrefillPendingPersisted;
     const onFocusNode = canvasContext?.onFocusNode;
     const canvasNodes = canvasContext?.canvasNodes;
     const runningNodeId = canvasContext?.runningNodeId;
@@ -859,7 +862,7 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
         }
     };
 
-    const submit = async (override?: string, options?: CloudAgentMessagePresentation & { requiresVision?: boolean }) => {
+    const submit = async (override?: string, options?: CloudAgentMessagePresentation & { id?: number; requiresVision?: boolean }) => {
         if (!accountIsCurrent() || cloudOpeningRef.current || canvasId && !cloudHistoryReady && !pendingSubmission.current?.request || modelRestoreError && !pendingSubmission.current?.request) return;
         const activity = canvasId ? canvasEditLeases.agent(canvasId) : null;
         if (activity && activity.runId !== run?.id && !pendingSubmission.current?.request) return;
@@ -869,7 +872,7 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
         const matchesPending = pendingRequest?.request && pendingRequest.displayText === draft;
         const matchesPrefill = prefilled?.displayText === draft;
         const value = matchesPending ? pendingRequest.request!.prompt : matchesPrefill ? prefilled!.text : draft;
-        options = matchesPending ? { ...options, displayText: pendingRequest.displayText, canvasReferenceNodeId: pendingRequest.canvasReferenceNodeId } : matchesPrefill ? prefilled! : options;
+        options = matchesPending ? { ...(matchesPrefill ? prefilled : options), displayText: pendingRequest.displayText, canvasReferenceNodeId: pendingRequest.canvasReferenceNodeId } : matchesPrefill ? prefilled! : options;
         if (running && !pendingRequest?.request) {
             await interject(value);
             return;
@@ -956,6 +959,8 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
                 ...conversations.filter((item) => item.id !== activeConversationId),
             ], accountScope));
             if (!accountIsCurrent() || currentScope.current !== scope) return;
+            if (options?.id !== undefined) await onPrefillPendingPersisted?.(options.id);
+            if (!accountIsCurrent() || currentScope.current !== scope) return;
             setPrompt("");
             prefilledSubmissionRef.current = null;
             setMessages(nextMessages);
@@ -1019,7 +1024,7 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
         const pending = pendingAutoSubmit;
         if (!pending || !historyHydrated || !pendingHydrated || !cloudHistoryReady || modelRestoreError || profileLoading || !profileView || profileError || busy || running || otherAgentRunning) return;
         setPendingAutoSubmit(null);
-        void submit(pending.text, { requiresVision: pending.requiresVision, displayText: pending.displayText, canvasReferenceNodeId: pending.canvasReferenceNodeId });
+        void submit(pending.text, { id: pending.id, requiresVision: pending.requiresVision, displayText: pending.displayText, canvasReferenceNodeId: pending.canvasReferenceNodeId });
     }, [busy, historyHydrated, cloudHistoryReady, modelRestoreError, otherAgentRunning, pendingAutoSubmit, pendingHydrated, profileError, profileLoading, profileView, running]);
 
     const undoCanvasStep = async (target: AgentCanvasUndoTarget) => {

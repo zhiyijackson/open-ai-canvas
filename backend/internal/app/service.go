@@ -110,6 +110,14 @@ type Service struct {
 	// dramaTaskHook 只在测试中替换短剧调度的任务提交，生产路径始终走 CreateTask 准入。
 	dramaTailFrameHook func(userID, resourceID string) (string, error)
 	dramaTaskHook      func(userID string, req CreateTaskRequest, timeline *renderProject) (*model.Task, error)
+	taskCreateObserver func(userID, taskID, traceID string) error
+}
+
+// SetTaskCreateObserver installs the optional additive integration checkpoint
+// invoked immediately before an ordinary task enters the host billing/create
+// transaction. The observer must not mutate host task or billing state.
+func (s *Service) SetTaskCreateObserver(observer func(userID, taskID, traceID string) error) {
+	s.taskCreateObserver = observer
 }
 
 const taskWorkerConcurrency = 3

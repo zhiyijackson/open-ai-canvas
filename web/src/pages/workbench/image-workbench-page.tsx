@@ -19,31 +19,21 @@ import { imageQualityLabel } from "@/lib/image-quality";
 import { modelQuoteRequest } from "@/lib/model-pricing";
 import { quoteModel } from "@/services/api/logical-models";
 import { prepareBackendGenerationTask } from "@/services/api/generation-task";
-import { createGenerationTask, cancelGenerationTask, queryGenerationTask, retryGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { createGenerationTask, cancelGenerationTask, queryGenerationTask, recoverGenerationTaskMedia, retryGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { capabilitySupportedModes, createWorkbenchTask, listWorkbenchTasks, listWorkbenchTools, normalizeWorkbenchGuide, resolveWorkbenchResourceURL, type WorkbenchKind, type WorkbenchPromptPreset, type WorkbenchTool } from "@/services/api/workbench";
 import { resourceStorageKey, resolveResourceUrl, uploadResourceFile } from "@/services/api/resources";
 import { formatCredits, requestCreditCost } from "@/constant/credits";
 import { useCreationPreferencesStore } from "@/stores/use-creation-preferences-store";
 import { logicalModelIDForConfig, modelDisplayName, modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
+import type { WorkbenchReference, WorkbenchRuntime, WorkbenchSurfaceRenderer } from "@/open-ai-canvas-expand/workbench-contract";
 
 import { workbenchCategoryLabel, workbenchCategories } from "./workbench-catalog";
 import { missingWorkbenchInput, workbenchPromptRequired, workbenchVideoOperation } from "./workbench-input";
 import "./workbench.css";
 import "./workbench-count-picker.css";
 
-export type WorkbenchReference = {
-    id: string;
-    name: string;
-    kind: "image" | "video" | "audio";
-    resourceId?: string;
-    previewUrl: string;
-    progress: number;
-    uploading: boolean;
-    error?: string;
-    role: "reference" | "first_frame" | "last_frame";
-    slotKey?: string;
-};
+export type { WorkbenchReference } from "@/open-ai-canvas-expand/workbench-contract";
 
 export function filterWorkbenchTools(tools: WorkbenchTool[], category: string, query: string) {
     const normalized = query.trim().toLocaleLowerCase();
@@ -75,6 +65,9 @@ type WorkbenchTaskSnapshot = {
     kind: WorkbenchKind;
     toolId?: string;
     presetId?: string;
+    edit?: string;
+    sourceTaskId?: string;
+    sourceResourceId?: string;
     parameters: Record<string, unknown>;
     references: WorkbenchTaskReferenceSnapshot[];
 };
@@ -103,6 +96,9 @@ export function workbenchTaskSnapshot(task: GenerationTask): WorkbenchTaskSnapsh
         kind,
         ...(typeof snapshot.toolId === "string" ? { toolId: snapshot.toolId } : typeof metadata.workbenchToolId === "string" ? { toolId: metadata.workbenchToolId } : {}),
         ...(typeof snapshot.presetId === "string" ? { presetId: snapshot.presetId } : typeof metadata.workbenchPresetId === "string" ? { presetId: metadata.workbenchPresetId } : {}),
+        ...(typeof metadata.edit === "string" ? { edit: metadata.edit } : {}),
+        ...(typeof metadata.sourceTaskId === "string" ? { sourceTaskId: metadata.sourceTaskId } : {}),
+        ...(typeof metadata.sourceResourceId === "string" ? { sourceResourceId: metadata.sourceResourceId } : {}),
         parameters: rawParameters as Record<string, unknown>,
         references,
     };
@@ -164,7 +160,24 @@ function flowStepState(step: string, values: { tool: WorkbenchTool | null; refer
     return values.selectedModel ? "done" : "active";
 }
 
-export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
+const defaultWorkbenchRuntime: WorkbenchRuntime = {
+    listTools: (kind, signal) => listWorkbenchTools(kind, signal, false),
+    listTasks: listWorkbenchTasks,
+    createWorkbenchTask,
+    createGenerationTask,
+    getTask: (id, signal) => queryGenerationTask(id, { signal }),
+    cancelTask: cancelGenerationTask,
+    retryTask: retryGenerationTask,
+    recoverTaskMedia: recoverGenerationTaskMedia,
+    hasPendingSubmission: () => false,
+    recoverPendingSubmission: async () => {
+        throw new Error("没有待确认的生成请求");
+    },
+    uploadResource: uploadResourceFile,
+    resolveResourceURL: (id) => resolveWorkbenchResourceURL(id, "original"),
+};
+
+export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderSurface }: { kind: WorkbenchKind; runtime?: WorkbenchRuntime; renderSurface?: WorkbenchSurfaceRenderer }) {
     const { message } = App.useApp();
     const config = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
@@ -257,7 +270,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
         const controller = new AbortController();
         setDirectoryLoading(true);
         setDirectoryError("");
-        listWorkbenchTools(kind, controller.signal, false)
+        runtime.listTools(kind, controller.signal)
             .then((directory) => {
                 setTools(directory.tools.filter((item) => item.kind === kind && item.enabled !== false && (!capabilitySupportedModes(item).length || capabilitySupportedModes(item).includes(kind))).sort((a, b) => a.sortOrder - b.sortOrder));
             })
@@ -268,7 +281,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                 if (!controller.signal.aborted) setDirectoryLoading(false);
             });
         return () => controller.abort();
-    }, [kind]);
+    }, [kind, runtime]);
 
     useEffect(() => {
         const toolId = searchParams.get("tool");
@@ -400,7 +413,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
 
     const loadTasks = useCallback(async () => {
         try {
-            const result = await listWorkbenchTasks(kind, 100);
+            const result = await runtime.listTasks(kind, 100);
             setTasks(result);
             return result;
         } catch (error) {
@@ -409,7 +422,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
         } finally {
             setTasksLoading(false);
         }
-    }, [kind, message]);
+    }, [kind, message, runtime]);
 
     useEffect(() => {
         let stopped = false;
@@ -561,7 +574,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
             pending.map(async (reference, index) => {
                 const file = picked[index];
                 try {
-                    const resource = await uploadResourceFile(file, reference.kind, { fileName: file.name }, (uploaded, total) => {
+                    const resource = await runtime.uploadResource(file, reference.kind, { fileName: file.name }, (uploaded, total) => {
                         setReferences((current) => current.map((item) => (item.id === reference.id ? { ...item, progress: total ? (uploaded / total) * 100 : 0 } : item)));
                     });
                     setReferences((current) => current.map((item) => (item.id === reference.id ? { ...item, resourceId: resource.id, uploading: false, progress: 100 } : item)));
@@ -635,7 +648,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
             const referenceSnapshot = readyReferences.map((reference) => ({ resourceId: reference.resourceId!, kind: reference.kind, role: reference.role, ...(reference.slotKey ? { slotKey: reference.slotKey } : {}) }));
             const createdTask =
                 logicalModelId || channel?.scope === "system"
-                    ? await createWorkbenchTask({
+                    ? await runtime.createWorkbenchTask({
                           kind,
                           ...(tool ? { toolId: tool.id } : {}),
                           ...(tool && preset ? { presetId: preset.id } : {}),
@@ -695,8 +708,8 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                               ...(tool && preset ? { workbenchPresetId: preset.id } : {}),
                               workbench: { kind, ...(tool ? { toolId: tool.id } : {}), ...(tool && preset ? { presetId: preset.id } : {}), parameters, references: referenceSnapshot },
                           },
-                      }).then((taskInput) => createGenerationTask({ ...taskInput, ...(videoOperation ? { operation: videoOperation } : {}) }));
-            const task = await queryGenerationTask(createdTask.id);
+                      }).then((taskInput) => runtime.createGenerationTask({ ...taskInput, ...(videoOperation ? { operation: videoOperation } : {}) }));
+            const task = await runtime.getTask(createdTask.id);
             setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
             if (revision === workbenchRevisionRef.current) {
                 setResultHidden(false);
@@ -705,7 +718,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
             }
             message.success("生成任务已提交");
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "任务提交失败");
+            message.error(runtime.hasPendingSubmission() ? "任务已受理，详情暂时不可用，可稍后恢复查询" : error instanceof Error ? error.message : "任务提交失败");
         } finally {
             setBusy(false);
         }
@@ -714,7 +727,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
     const cancelTask = async (task: GenerationTask) => {
         setTaskBusyId(task.id);
         try {
-            const next = await cancelGenerationTask(task.id);
+            const next = await runtime.cancelTask(task.id);
             setTasks((current) => current.map((item) => (item.id === task.id ? next : item)));
             if (activeTask?.id === task.id) setActiveTask(next);
         } catch (error) {
@@ -771,7 +784,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                 name: `${reference.kind === "image" ? "图片" : reference.kind === "video" ? "视频" : "音频"} ${index + 1}`,
                 kind: reference.kind,
                 resourceId: reference.resourceId,
-                previewUrl: (await resolveWorkbenchResourceURL(reference.resourceId, "original")) || "",
+                previewUrl: (await runtime.resolveResourceURL(reference.resourceId)) || "",
                 progress: 100,
                 uploading: false,
                 role: reference.role || "reference",
@@ -799,13 +812,13 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
             let restoreSource = task;
             if (!restoreSource.inputJson) {
                 try {
-                    restoreSource = await queryGenerationTask(task.id);
+                    restoreSource = await runtime.getTask(task.id);
                 } catch {
                     // The retry response also contains the safe restore snapshot.
                 }
             }
             const restored = await restoreTaskToComposer(restoreSource, false);
-            const next = await retryGenerationTask(task.id);
+            const next = await runtime.retryTask(task.id);
             if (!restored) await restoreTaskToComposer(next, false);
             setTasks((current) => [next, ...current.filter((item) => item.id !== next.id)]);
             setActiveTask(next);
@@ -817,12 +830,26 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
         }
     };
 
+    const recoverTaskMedia = async (task: GenerationTask) => {
+        setTaskBusyId(task.id);
+        try {
+            const next = await runtime.recoverTaskMedia(task.id);
+            setTasks((current) => current.map((item) => (item.id === task.id ? next : item)));
+            if (activeTask?.id === task.id) setActiveTask(next);
+            message.success("已重新提交素材保存");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "素材保存重试失败");
+        } finally {
+            setTaskBusyId("");
+        }
+    };
+
     const openDetail = async (task: GenerationTask) => {
         const requestId = ++detailRequestRef.current;
         setDetailTask(task);
         setDetailLoading(true);
         try {
-            const detail = await queryGenerationTask(task.id);
+            const detail = await runtime.getTask(task.id);
             if (requestId === detailRequestRef.current) setDetailTask(detail);
         } catch (error) {
             if (requestId === detailRequestRef.current) message.error(error instanceof Error ? error.message : "任务详情加载失败");
@@ -930,6 +957,18 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
         ) : (
             <p className="workbench-list-empty">选择模型后，这里会显示该模型真正支持的参数。</p>
         );
+    const reloadTools = async () => {
+        setDirectoryError("");
+        setDirectoryLoading(true);
+        try {
+            const directory = await runtime.listTools(kind);
+            setTools(directory.tools.filter((item) => item.kind === kind && item.enabled !== false && (!capabilitySupportedModes(item).length || capabilitySupportedModes(item).includes(kind))).sort((a, b) => a.sortOrder - b.sortOrder));
+        } catch (error) {
+            setDirectoryError(error instanceof Error ? error.message : "工具目录加载失败");
+        } finally {
+            setDirectoryLoading(false);
+        }
+    };
     const toolLibrary = (
         <div className="workbench-tool-library" id="workbench-tool-library">
             <div className="workbench-tool-library-heading">
@@ -959,18 +998,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                     <span>{directoryError}</span>
                     <Button
                         size="small"
-                        onClick={() => {
-                            setDirectoryError("");
-                            setDirectoryLoading(true);
-                            listWorkbenchTools(kind)
-                                .then((directory) =>
-                                    setTools(
-                                        directory.tools.filter((item) => item.kind === kind && item.enabled !== false && (!capabilitySupportedModes(item).length || capabilitySupportedModes(item).includes(kind))).sort((a, b) => a.sortOrder - b.sortOrder),
-                                    ),
-                                )
-                                .catch((error) => setDirectoryError(error instanceof Error ? error.message : "工具目录加载失败"))
-                                .finally(() => setDirectoryLoading(false));
-                        }}
+                        onClick={() => void reloadTools()}
                     >
                         重试
                     </Button>
@@ -985,6 +1013,99 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
             )}
         </div>
     );
+
+    if (renderSurface) {
+        return renderSurface({
+            kind,
+            config,
+            composerConfig,
+            tool,
+            preset,
+            tools,
+            filteredTools,
+            directoryLoading,
+            directoryError,
+            toolCategory,
+            toolSearch,
+            prompt,
+            references,
+            selectedModel,
+            models,
+            settingsPanel,
+            fileRef,
+            uploadSlotKey,
+            busy,
+            taskBusyId,
+            tasks,
+            tasksLoading,
+            activeTask,
+            resultTask,
+            resultUrl,
+            estimateLabel,
+            parameters:
+                kind === "image"
+                    ? { ratio, quality, imageResolution, count, transparentBackground: config.transparentBackground, imageParameters: config.imageParameters || "" }
+                    : { ratio, seconds, videoQuality, generateAudio: config.videoGenerateAudio || "false", watermark: config.videoWatermark || "false" },
+            mobileTab,
+            setMobileTab,
+            setPrompt,
+            setReferences,
+            setToolCategory,
+            setToolSearch,
+            setUploadSlotKey,
+            selectModel: (model) => {
+                updateConfig(kind === "image" ? "imageModel" : "videoModel", model);
+                updateConfig("model", model);
+            },
+            applyParameters: (parameters) => {
+                if (parameters.ratio) setRatio(parameters.ratio);
+                if (kind === "image") {
+                    if (parameters.quality) setQuality(parameters.quality);
+                    if (parameters.imageResolution) setImageResolution(parameters.imageResolution);
+                    if (parameters.count) setCount(parameters.count);
+                    if (parameters.transparentBackground) updateConfig("transparentBackground", parameters.transparentBackground);
+                    if (parameters.imageParameters !== undefined) updateConfig("imageParameters", parameters.imageParameters);
+                } else {
+                    if (parameters.seconds) setSeconds(parameters.seconds);
+                    if (parameters.videoQuality) setVideoQuality(parameters.videoQuality);
+                    if (parameters.generateAudio) updateConfig("videoGenerateAudio", parameters.generateAudio);
+                    if (parameters.watermark) updateConfig("videoWatermark", parameters.watermark);
+                }
+            },
+            reloadTools,
+            resetWorkbench,
+            chooseTool,
+            addFiles,
+            removeReference,
+            submit,
+            submitDirectTask: async (input) => {
+                const created = await runtime.createGenerationTask(input);
+                const task = await runtime.getTask(created.id);
+                setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+                setActiveTask(task);
+                setResultHidden(false);
+                setMobileTab("result");
+            },
+            hasPendingSubmission: runtime.hasPendingSubmission(),
+            recoverPendingSubmission: async () => {
+                const created = await runtime.recoverPendingSubmission();
+                const task = await runtime.getTask(created.id);
+                setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+                setActiveTask(task);
+                setResultHidden(false);
+                setMobileTab("result");
+            },
+            uploadResource: runtime.uploadResource,
+            cancelTask,
+            retryTask,
+            recoverTaskMedia,
+            openTask: async (task) => {
+                const detail = await runtime.getTask(task.id);
+                await restoreTaskToComposer(detail);
+            },
+            taskModelLabel,
+        });
+    }
 
     return (
         <WorkspacePage fluid scroll={false} className="workbench-page">

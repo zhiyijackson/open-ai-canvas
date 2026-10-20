@@ -5,6 +5,7 @@ FROM --platform=$BUILDPLATFORM oven/bun:1.3.9 AS web-build
 
 WORKDIR /app/web
 COPY web/package.json web/bun.lock ./
+COPY web/src/open-ai-canvas-expand/vendor ./src/open-ai-canvas-expand/vendor
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lockfile --cache-dir=/root/.bun/install/cache
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
