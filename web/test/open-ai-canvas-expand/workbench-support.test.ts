@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { defaultModelCapabilityConfig } from "@/lib/model-capabilities";
+import { defaultModelCapabilityConfig, normalizeModelCapabilityConfig } from "@/lib/model-capabilities";
 import {
     assignWorkbenchReferenceRole,
     expandWorkbenchEnabled,
@@ -12,6 +12,7 @@ import {
     workbenchImageSubmissionSettings,
     workbenchCompatibilityParameters,
     workbenchFrameRoleConflict,
+    workbenchVideoOperationIssue,
     type ExpandWorkbenchReference,
 } from "../../src/open-ai-canvas-expand/workbench-support";
 
@@ -131,5 +132,28 @@ describe("workbench restore and video reference validation", () => {
         expect(assigned.map((item) => item.role)).toEqual(["reference", "first_frame"]);
         expect(workbenchFrameRoleConflict(assigned)).toBeUndefined();
         expect(workbenchFrameRoleConflict([reference("a", "last_frame"), reference("b", "last_frame")])).toBe("尾帧最多只能选择一张图片");
+    });
+
+    test("matches the actual video operation to the selected profile without changing reference intent", () => {
+        const profile = defaultModelCapabilityConfig("openai-video", "video-model").video!;
+        const references = [reference("product", "reference")];
+        expect(workbenchVideoOperationIssue(profile, references)).toBe("当前模型不支持参考素材生视频，请调整素材角色或切换模型");
+        expect(references[0].role).toBe("reference");
+        expect(workbenchVideoOperationIssue(profile, [reference("first", "first_frame"), reference("last", "last_frame")])).toBeUndefined();
+        expect(workbenchVideoOperationIssue(profile, [])).toBeUndefined();
+        expect(workbenchVideoOperationIssue(profile, [{ kind: "audio" }])).toContain("音频生视频");
+        const multimodal = defaultModelCapabilityConfig("volcengine-ark-video", "video-model").video!;
+        expect(workbenchVideoOperationIssue(multimodal, references)).toBeUndefined();
+        expect(workbenchVideoOperationIssue(multimodal, [{ kind: "video" }])).toBeUndefined();
+        expect(workbenchVideoOperationIssue(multimodal, [{ kind: "audio" }])).toBeUndefined();
+    });
+
+    test("an explicitly empty normalized video operation list permits no generation modes", () => {
+        const config = defaultModelCapabilityConfig("openai-video", "video-model");
+        const profile = normalizeModelCapabilityConfig({ ...config, video: { ...config.video!, operations: [] } }).video!;
+        expect(profile.operations).toEqual([]);
+        expect(workbenchVideoOperationIssue(profile, [])).toContain("文生视频");
+        expect(workbenchVideoOperationIssue(profile, [reference("first", "first_frame")])).toContain("首尾帧生视频");
+        expect(workbenchVideoOperationIssue(undefined, [])).toContain("能力不可用");
     });
 });

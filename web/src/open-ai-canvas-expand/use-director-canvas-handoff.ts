@@ -7,9 +7,13 @@ import { flushCanvasStorePersistence } from "@/stores/canvas/use-canvas-store";
 import type { Asset } from "@/stores/use-asset-store";
 import type { CanvasNodeData } from "@/types/canvas";
 import { loadAssetsForUse } from "@/services/user-data-sync";
+import { getActiveUserScope } from "@/lib/user-scope";
+import { useUserStore } from "@/stores/use-user-store";
+import { workbenchSessionEpoch } from "./workbench-session";
 import {
     directorAgentPrompt,
     directorHandoffNodeIds,
+    directorHandoffSkillIds,
     loadDirectorHandoff,
     markDirectorHandoffPrepared,
     uninsertedDirectorHandoffPayloads,
@@ -54,6 +58,14 @@ export function useDirectorCanvasHandoff({
     const handoffAttemptRef = useRef("");
     const prefillContextsRef = useRef(new Map<number, string>());
     const [handoff, setHandoff] = useState<StoredDirectorHandoff | null>(null);
+    const userId = useUserStore((state) => state.user?.id);
+    const scopeRef = useRef("");
+    scopeRef.current = `${getActiveUserScope()}:${projectId}`;
+
+    useEffect(() => {
+        handoffAttemptRef.current = "";
+        prefillContextsRef.current.clear();
+    }, [projectId, userId]);
 
     useEffect(() => {
         const contextId = searchParams.get("director")?.trim() || "";
@@ -73,7 +85,7 @@ export function useDirectorCanvasHandoff({
         return () => {
             active = false;
         };
-    }, [projectId, projectLoaded, reportError, searchParams]);
+    }, [projectId, projectLoaded, reportError, searchParams, userId]);
 
     useEffect(() => {
         if (!handoff?.assetIds.length || handoff.preparedAt) return;
@@ -82,6 +94,16 @@ export function useDirectorCanvasHandoff({
 
     useEffect(() => {
         if (!projectLoaded || !assetsHydrated || !handoff || handoff.preparedAt || searchParams.get("mode") !== "director") return;
+        let skillIds: readonly string[];
+        try {
+            skillIds = directorHandoffSkillIds(handoff);
+        } catch (error) {
+            reportError(error instanceof Error ? error.message : "编导技能尚未确认");
+            return;
+        }
+        const scope = getActiveUserScope();
+        const epoch = workbenchSessionEpoch(scope);
+        const isCurrent = () => scopeRef.current === `${scope}:${projectId}` && epoch === workbenchSessionEpoch(scope);
         const { payloads: assetPayloads, missingAssetIds } = canvasAssetHandoffPayloads(assets, handoff.assetIds);
         if (missingAssetIds.length) return;
         const payloads = [...assetPayloads, ...handoff.resourcePayloads];
@@ -96,16 +118,19 @@ export function useDirectorCanvasHandoff({
 
         const pendingPayloads = uninsertedDirectorHandoffPayloads(nodesRef.current, payloads);
         const persistAndPrefill = async (createdNodes: CanvasNodeData[]) => {
+            if (!isCurrent()) return;
             const finalized = await finalizeCanvasAssetHandoff({
                 searchParams,
                 currentNodes: nodesRef.current,
                 createdNodes,
                 persist: async (nextNodes) => {
+                    if (!isCurrent()) throw new DOMException("编导会话已切换", "AbortError");
                     nodesRef.current = nextNodes;
                     await persistNodes(nextNodes);
                     await flushCanvasStorePersistence();
                 },
             });
+            if (!isCurrent()) return;
             const focusNodeIds = directorHandoffNodeIds(finalized.nodes, handoff);
             if (focusNodeIds.length !== payloads.length) throw new Error("超级编导参考素材未完整写入画布，请重试");
             const selection = new Set(focusNodeIds);
@@ -115,12 +140,13 @@ export function useDirectorCanvasHandoff({
             enqueueAgentPrefill((current) => {
                 const id = (current?.id ?? 0) + 1;
                 prefillContextsRef.current.set(id, handoff.contextId);
-                return { id, text, displayText: text, autoSubmit: true };
+                return { id, text, displayText: text, autoSubmit: true, skillIds };
             });
             openAgent();
         };
         const insertion = pendingPayloads.length ? insertPayloads(pendingPayloads) : Promise.resolve([] as CanvasNodeData[]);
         void insertion.then(persistAndPrefill).catch((error) => {
+            if (!isCurrent()) return;
             handoffAttemptRef.current = "";
             reportError(error instanceof Error ? error.message : "超级编导素材交接失败");
         });

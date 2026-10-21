@@ -3,7 +3,14 @@ import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-refer
 import type { CloudAgentMessagePresentation } from "@/services/cloud-agent-conversations";
 import type { CanvasNodeData } from "@/types/canvas";
 
-export type AgentPrefillRequest = CloudAgentMessagePresentation & { id: number; text: string; autoSubmit?: boolean; requiresVision?: boolean };
+export type AgentPrefillRequest = CloudAgentMessagePresentation & {
+    id: number;
+    text: string;
+    autoSubmit?: boolean;
+    requiresVision?: boolean;
+    /** undefined 沿用当前技能；空数组明确不使用技能。 */
+    skillIds?: readonly string[];
+};
 
 /**
  * 当前页面提供给平台级 Agent 的画布上下文。只有画布编辑器会发布它；

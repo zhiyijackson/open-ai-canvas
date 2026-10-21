@@ -1,4 +1,5 @@
 import { normalizeImageValue, normalizeVideoValue, type ImageCapabilityConfig, type VideoCapabilityConfig } from "@/lib/model-capabilities";
+import { workbenchVideoOperation } from "@/pages/workbench/workbench-input";
 
 export function expandWorkbenchEnabled(configuredValue?: string) {
     return configuredValue !== "false";
@@ -29,6 +30,14 @@ export function workbenchFrameRoleConflict(references: ExpandWorkbenchReference[
     const firstFrames = references.filter((reference) => reference.kind === "image" && reference.role === "first_frame").length;
     const lastFrames = references.filter((reference) => reference.kind === "image" && reference.role === "last_frame").length;
     return firstFrames > 1 ? "首帧最多只能选择一张图片" : lastFrames > 1 ? "尾帧最多只能选择一张图片" : undefined;
+}
+
+export function workbenchVideoOperationIssue(profile: VideoCapabilityConfig | undefined, references: ReadonlyArray<{ kind: string; role?: string }>) {
+    if (!profile) return "当前视频模型能力不可用，请重新选择模型";
+    const operation = workbenchVideoOperation(references);
+    if (profile.operations.includes(operation)) return undefined;
+    const labels: Record<string, string> = { text_to_video: "文生视频", image_to_video: "首尾帧生视频", reference_to_video: "参考素材生视频", audio_to_video: "音频生视频" };
+    return `当前模型不支持${labels[operation] || "当前生成模式"}，请调整素材角色或切换模型`;
 }
 
 export function parseImageParameters(value?: string) {

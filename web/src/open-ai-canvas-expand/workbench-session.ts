@@ -1,5 +1,6 @@
 import type { CreateTaskInput } from "@/services/api/task-center";
 import type { CreateWorkbenchTaskInput, WorkbenchKind } from "@/services/api/workbench";
+import type { DirectorSkillSelection } from "./director-skills";
 
 export type WorkbenchDraftReference = {
     resourceId: string;
@@ -13,6 +14,7 @@ export type WorkbenchSessionDraft = {
     prompt: string;
     directorContextId?: string;
     directorLanguage?: string;
+    directorSelection?: DirectorSkillSelection | null;
     toolId?: string;
     presetId?: string;
     model: string;
@@ -46,7 +48,7 @@ function draftKey(scope: string, kind: WorkbenchKind) {
 }
 
 function cloneDraft(draft: WorkbenchSessionDraft): WorkbenchSessionDraft {
-    return { ...draft, parameters: { ...draft.parameters }, references: draft.references.map((reference) => ({ ...reference })) };
+    return { ...draft, ...(draft.directorSelection ? { directorSelection: { ...draft.directorSelection, skillIds: [...draft.directorSelection.skillIds] } } : {}), parameters: { ...draft.parameters }, references: draft.references.map((reference) => ({ ...reference })) };
 }
 
 function clonePendingSubmission(submission: WorkbenchPendingSubmission): WorkbenchPendingSubmission {
@@ -88,8 +90,10 @@ export function writeWorkbenchMaskPendingSubmission(scope: string, submission: W
     pendingMaskSubmissions.set(draftKey(scope, "image"), structuredClone(submission));
 }
 
-export function clearWorkbenchMaskPendingSubmission(scope: string) {
-    pendingMaskSubmissions.delete(draftKey(scope, "image"));
+export function clearWorkbenchMaskPendingSubmission(scope: string, expectedOperationId?: string) {
+    const key = draftKey(scope, "image");
+    if (expectedOperationId !== undefined && pendingMaskSubmissions.get(key)?.clientOperationId !== expectedOperationId) return;
+    pendingMaskSubmissions.delete(key);
 }
 
 export function tryLockWorkbenchSubmission(scope: string, kind: WorkbenchKind, clientOperationId: string) {
@@ -144,7 +148,7 @@ export function sameWorkbenchDraft(left: WorkbenchSessionDraft, right: Workbench
 }
 
 export function sameWorkbenchComposerDraft(left: WorkbenchSessionDraft, right: WorkbenchSessionDraft) {
-    const composerDraft = ({ directorContextId: _contextId, directorLanguage: _language, ...draft }: WorkbenchSessionDraft) => draft;
+    const composerDraft = ({ directorContextId: _contextId, ...draft }: WorkbenchSessionDraft) => draft;
     return JSON.stringify(composerDraft(left)) === JSON.stringify(composerDraft(right));
 }
 

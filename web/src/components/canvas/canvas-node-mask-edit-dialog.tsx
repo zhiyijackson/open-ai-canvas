@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type PointerEvent } from "react";
-import { Button, Collapse, Input, Segmented, Slider } from "antd";
+import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { App, Button, Collapse, Input, Segmented, Slider } from "antd";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
@@ -15,13 +15,14 @@ export type CanvasImageMaskEditPayload = {
     prompt: string;
     generationConfig?: Partial<Pick<AiConfig, "model" | "imageModel" | "size" | "quality" | "count" | "transparentBackground">>;
 };
-type MaskEditorProps = { dataUrl: string; open: boolean; config: AiConfig; onClose: () => void; onConfirm: (payload: CanvasImageMaskEditPayload) => void };
+type MaskEditorProps = { dataUrl: string; open: boolean; config: AiConfig; busy?: boolean; confirmDiscard?: boolean; submissionRecovery?: ReactNode; onClose: () => void; onConfirm: (payload: CanvasImageMaskEditPayload) => void };
 
 export function CanvasNodeMaskEditDialog(props: MaskEditorProps) {
     return props.open && props.dataUrl ? <MaskEditor key={props.dataUrl} {...props} /> : null;
 }
 
-function MaskEditor({ dataUrl, config, onClose, onConfirm }: MaskEditorProps) {
+function MaskEditor({ dataUrl, config, busy = false, confirmDiscard = false, submissionRecovery, onClose, onConfirm }: MaskEditorProps) {
+    const { modal } = App.useApp();
     const { size, error: loadError } = useImageToolSource(dataUrl);
     const surface = useRef<HTMLCanvasElement>(null);
     const strokes = useRef<MaskStroke[]>([]);
@@ -35,6 +36,7 @@ function MaskEditor({ dataUrl, config, onClose, onConfirm }: MaskEditorProps) {
         return { ...config, model, imageModel: model };
     });
     const [error, setError] = useState("");
+    const initialSettings = useRef(settings);
     const [strokeCount, setStrokeCount] = useState(0);
     const theme = canvasThemes[useActiveTheme()];
 
@@ -59,6 +61,7 @@ function MaskEditor({ dataUrl, config, onClose, onConfirm }: MaskEditorProps) {
         setStrokeCount(strokes.current.length);
     };
     const submit = () => {
+        if (busy || submissionRecovery) return;
         if (!prompt.trim()) return setError("请填写修改要求");
         if (!size) return;
         let maskDataUrl: string;
@@ -67,9 +70,16 @@ function MaskEditor({ dataUrl, config, onClose, onConfirm }: MaskEditorProps) {
         const { model, quality, count, transparentBackground } = settings;
         onConfirm({ prompt: prompt.trim(), maskDataUrl, generationConfig: { model, imageModel: model, size: settings.size, quality, count, transparentBackground } });
     };
+    const close = () => {
+        if (busy) return;
+        if (confirmDiscard && (prompt.trim() || strokes.current.length || JSON.stringify(initialSettings.current) !== JSON.stringify(settings))) {
+            modal.confirm({ title: "放弃局部编辑修改？", content: "关闭会放弃当前选区、修改要求和设置；已保存的待确认提交仍可恢复。", okText: "放弃修改并关闭", cancelText: "继续编辑", onOk: onClose });
+        } else onClose();
+    };
     return (
-        <AppModal open centered title="局部重绘" className="workspace-modal workspace-modal-wide" onCancel={onClose} onOk={submit} okText="AI 修改" okButtonProps={{ disabled: !size }}>
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <AppModal open centered title="局部重绘" className="workspace-modal workspace-modal-wide" onCancel={close} onOk={submit} okText="AI 修改" confirmLoading={busy} keyboard={!busy} maskClosable={!busy} cancelButtonProps={{ disabled: busy }} okButtonProps={{ disabled: !size || busy || Boolean(submissionRecovery) }}>
+            {submissionRecovery}
+            <div inert={busy || Boolean(submissionRecovery)} className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
                 <section className="flex min-w-0 flex-col items-center justify-center gap-3 rounded-lg bg-surface-active p-3">
                     <div className="relative max-w-full select-none overflow-hidden rounded-lg">
                         <img src={dataUrl} alt="局部重绘原图" draggable={false} className="block max-h-[62vh] max-w-full" />

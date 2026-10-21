@@ -25,7 +25,7 @@ import { formatCredits, requestCreditCost } from "@/constant/credits";
 import { useCreationPreferencesStore } from "@/stores/use-creation-preferences-store";
 import { logicalModelIDForConfig, modelDisplayName, modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
-import type { WorkbenchReference, WorkbenchRuntime, WorkbenchSurfaceRenderer } from "@/open-ai-canvas-expand/workbench-contract";
+import type { WorkbenchReference, WorkbenchRestoredMetadata, WorkbenchRuntime, WorkbenchSurfaceRenderer } from "@/open-ai-canvas-expand/workbench-contract";
 import { createWorkbenchRestoreCoordinator } from "@/open-ai-canvas-expand/workbench-session";
 import { serializedWorkbenchImageParameters, workbenchDefaultParameters, workbenchImageSubmissionSettings } from "@/open-ai-canvas-expand/workbench-support";
 
@@ -206,6 +206,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
     const [restoreCoordinator] = useState(() => createWorkbenchRestoreCoordinator(() => workbenchRevisionRef.current));
     const [tasks, setTasks] = useState<GenerationTask[]>([]);
     const [tasksLoading, setTasksLoading] = useState(true);
+    const [tasksError, setTasksError] = useState("");
     const [detailTask, setDetailTask] = useState<GenerationTask | null>(null);
     const [detailLoading, setDetailLoading] = useState(false);
     const detailRequestRef = useRef(0);
@@ -393,6 +394,8 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
             return;
         }
         const controller = new AbortController();
+        setEstimateCredits(null);
+        setEstimateEstimated(false);
         if (localCredits === null) setEstimateTone("loading");
         else {
             setEstimateCredits(localCredits);
@@ -400,6 +403,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         }
         quoteModel(request, controller.signal)
             .then(({ quote }) => {
+                if (controller.signal.aborted) return;
                 setEstimateCredits(quote.amountMicrocredits / 1_000_000);
                 setEstimateEstimated(quote.estimated === true);
                 setEstimateTone("quote");
@@ -417,9 +421,12 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         try {
             const result = await runtime.listTasks(kind, 100);
             setTasks(result);
+            setTasksError("");
             return result;
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "任务列表加载失败");
+            const detail = error instanceof Error ? error.message : "任务列表加载失败";
+            setTasksError(detail);
+            message.error(detail);
             return [];
         } finally {
             setTasksLoading(false);
@@ -437,7 +444,6 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                 const latest = result.find((item) => item.id === activeTask.id);
                 if (latest) {
                     setActiveTask(latest);
-                    if (latest.status === "succeeded" || latest.status === "failed" || latest.status === "cancelled") setMobileTab("result");
                 }
             }
             timer = window.setTimeout(() => void poll(), result.some((task) => task.status === "queued" || task.status === "running") ? 5000 : 30000);
@@ -718,6 +724,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                 setMobileTab("result");
             }
             message.success("生成任务已提交");
+            return task;
         } catch (error) {
             message.error(runtime.hasPendingSubmission() ? "提交结果待确认，请恢复查询原任务" : error instanceof Error ? error.message : "任务提交失败");
         } finally {
@@ -738,30 +745,38 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         }
     };
 
-    const restoreTaskToComposer = async (task: GenerationTask, notify = true, shouldApply: () => boolean = () => true) => {
-        if (!shouldApply()) return false;
+    const restoreTaskToComposer = async (task: GenerationTask, notify = true, shouldApply: () => boolean = () => true, onRestored?: (metadata: WorkbenchRestoredMetadata) => void): Promise<WorkbenchRestoredMetadata | null> => {
+        if (!shouldApply()) return null;
         const snapshot = workbenchTaskSnapshot(task);
         if (!snapshot || snapshot.kind !== kind) {
             if (notify) message.warning("该任务没有可恢复的工作台参数");
-            return false;
+            return null;
         }
         const restoredTool = snapshot.toolId ? tools.find((item) => item.id === snapshot.toolId) || null : null;
         const restoredPreset = restoredTool && snapshot.presetId ? restoredTool.presets.find((item) => item.id === snapshot.presetId) || null : null;
         const parameters = snapshot.parameters;
         const restoredReferences = await Promise.all(
-            snapshot.references.map(async (reference, index): Promise<WorkbenchReference> => ({
-                id: crypto.randomUUID(),
-                name: `${reference.kind === "image" ? "图片" : reference.kind === "video" ? "视频" : "音频"} ${index + 1}`,
-                kind: reference.kind,
-                resourceId: reference.resourceId,
-                previewUrl: (await runtime.resolveResourceURL(reference.resourceId)) || "",
-                progress: 100,
-                uploading: false,
-                role: reference.role || "reference",
-                ...(reference.slotKey ? { slotKey: reference.slotKey } : {}),
-            })),
+            snapshot.references.map(async (reference, index): Promise<WorkbenchReference> => {
+                const restored: WorkbenchReference = {
+                    id: createClientUUID(),
+                    name: `${reference.kind === "image" ? "图片" : reference.kind === "video" ? "视频" : "音频"} ${index + 1}`,
+                    kind: reference.kind,
+                    resourceId: reference.resourceId,
+                    previewUrl: "",
+                    progress: 100,
+                    uploading: false,
+                    role: reference.role || "reference",
+                    ...(reference.slotKey ? { slotKey: reference.slotKey } : {}),
+                };
+                try {
+                    const previewUrl = await runtime.resolveResourceURL(reference.resourceId);
+                    return { ...restored, previewUrl: previewUrl || "", ...(!previewUrl ? { error: "参考素材不可用，请重新选择" } : {}) };
+                } catch (error) {
+                    return { ...restored, error: error instanceof Error ? error.message : "参考素材读取失败，请重新选择" };
+                }
+            }),
         );
-        if (!shouldApply()) return false;
+        if (!shouldApply()) return null;
         workbenchRevisionRef.current += 1;
         if (kind === "image") {
             const restoredRatio = typeof parameters.size === "string" ? parameters.size : ratio;
@@ -807,8 +822,10 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         setResultHidden(false);
         setMobileTab("generate");
         setDetailTask(null);
+        const metadata: WorkbenchRestoredMetadata = { parameters, model: task.model, toolId: snapshot.toolId, presetId: snapshot.presetId };
+        onRestored?.(metadata);
         if (notify) message.success("任务配置已载入编辑器");
-        return true;
+        return metadata;
     };
 
     const restoreKnownTaskToComposer = (task: GenerationTask, notify = true) => {
@@ -816,7 +833,8 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
         return restoreTaskToComposer(task, notify, attempt.isCurrent);
     };
 
-    const retryTask = async (task: GenerationTask) => {
+    const retryTask = async (task: GenerationTask, onRestored?: (metadata: WorkbenchRestoredMetadata) => void) => {
+        const attempt = restoreCoordinator.start();
         setTaskBusyId(task.id);
         try {
             let restoreSource = task;
@@ -827,11 +845,14 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                     // The retry response also contains the safe restore snapshot.
                 }
             }
-            const restored = await restoreTaskToComposer(restoreSource, false);
+            const restored = await restoreTaskToComposer(restoreSource, false, attempt.isCurrent, onRestored);
+            // A successful restore advances the draft revision itself. Keep guarding
+            // the later retry response against edits and newer history selections.
+            const responseAttempt = restored ? restoreCoordinator.start() : attempt;
             const next = await runtime.retryTask(task.id);
-            if (!restored) await restoreTaskToComposer(next, false);
+            const restoredFromRetry = !restored && await restoreTaskToComposer(next, false, responseAttempt.isCurrent, onRestored);
             setTasks((current) => [next, ...current.filter((item) => item.id !== next.id)]);
-            setActiveTask(next);
+            if (restoredFromRetry || responseAttempt.isCurrent()) setActiveTask(next);
             message.success("任务已重新提交");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "重试任务失败");
@@ -1042,6 +1063,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
             composerConfig,
             tool,
             preset,
+            presetPending,
             tools,
             filteredTools,
             directoryLoading,
@@ -1059,6 +1081,7 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
             taskBusyId,
             tasks,
             tasksLoading,
+            tasksError,
             activeTask,
             resultTask,
             resultUrl,
@@ -1074,8 +1097,8 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                 workbenchRevisionRef.current += 1;
                 setPrompt(value);
             },
-            setReferences: (value) => {
-                workbenchRevisionRef.current += 1;
+            setReferences: (value, markEdited = true) => {
+                if (markEdited) workbenchRevisionRef.current += 1;
                 setReferences(value);
             },
             setToolCategory,
@@ -1103,11 +1126,29 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                 }
             },
             reloadTools,
+            reloadTasks: async () => {
+                setTasksLoading(true);
+                await loadTasks();
+            },
             resetWorkbench,
             chooseTool: (nextTool) => {
                 workbenchRevisionRef.current += 1;
                 chooseTool(nextTool);
             },
+            choosePreset: (nextPreset) => {
+                if (!prompt.trim()) workbenchRevisionRef.current += 1;
+                choosePreset(nextPreset);
+            },
+            restorePreset: (nextPreset) => {
+                workbenchRevisionRef.current += 1;
+                setPreset(nextPreset);
+                setPresetPending(null);
+            },
+            applyPreset: (mode) => {
+                if (presetPending) workbenchRevisionRef.current += 1;
+                applyPreset(mode);
+            },
+            cancelPreset: () => setPresetPending(null),
             addFiles: async (files, slotKey) => {
                 workbenchRevisionRef.current += 1;
                 await addFiles(files, slotKey);
@@ -1135,15 +1176,14 @@ export function WorkbenchPage({ kind, runtime = defaultWorkbenchRuntime, renderS
                 setMobileTab("result");
             },
             uploadResource: runtime.uploadResource,
+            resolveResourceURL: runtime.resolveResourceURL,
             cancelTask,
             retryTask,
             recoverTaskMedia,
             openTask: async (task) => {
                 const attempt = restoreCoordinator.start();
                 const detail = await runtime.getTask(task.id);
-                const snapshot = workbenchTaskSnapshot(detail);
-                const applied = await restoreTaskToComposer(detail, true, attempt.isCurrent);
-                return applied && snapshot?.kind === kind ? { parameters: snapshot.parameters } : null;
+                return restoreTaskToComposer(detail, true, attempt.isCurrent);
             },
             taskModelLabel,
         });
