@@ -57,8 +57,9 @@ describe("workbench session drafts", () => {
         expect(sameWorkbenchDraft(imageDraft, { ...imageDraft, references: [] })).toBe(false);
     });
 
-    test("compares model and advanced settings while ignoring director-only session state", () => {
-        expect(sameWorkbenchComposerDraft(imageDraft, { ...imageDraft, directorContextId: "director-a", directorLanguage: "zh-CN" })).toBe(true);
+    test("protects director language and settings while ignoring the internal context identity", () => {
+        expect(sameWorkbenchComposerDraft(imageDraft, { ...imageDraft, directorContextId: "director-a" })).toBe(true);
+        expect(sameWorkbenchComposerDraft({ ...imageDraft, directorLanguage: "zh-CN" }, { ...imageDraft, directorLanguage: "en-US" })).toBe(false);
         expect(sameWorkbenchComposerDraft(imageDraft, { ...imageDraft, model: "other-model" })).toBe(false);
         expect(sameWorkbenchComposerDraft(imageDraft, { ...imageDraft, parameters: { ...imageDraft.parameters, transparentBackground: "true" } })).toBe(false);
         expect(sameWorkbenchComposerDraft(imageDraft, { ...imageDraft, parameters: { ...imageDraft.parameters, imageParameters: '{"style":"natural"}' } })).toBe(false);
@@ -128,6 +129,28 @@ describe("workbench session drafts", () => {
         });
         clearWorkbenchMaskPendingSubmission("user-mask");
         expect(readWorkbenchMaskPendingSubmission("user-mask")).toBeNull();
+    });
+
+    test("does not clear a newer mask recovery when an older operation completes late", () => {
+        const scope = "user-mask-late";
+        const writeOperation = (clientOperationId: string) => writeWorkbenchMaskPendingSubmission(scope, {
+            fingerprint: clientOperationId,
+            clientOperationId,
+            input: { clientOperationId, type: "canvas_image", prompt: "局部修改" },
+        });
+        writeOperation("mask-old");
+        const original = readWorkbenchMaskPendingSubmission(scope)!;
+        clearWorkbenchMaskPendingSubmission(scope, original.clientOperationId);
+        expect(readWorkbenchMaskPendingSubmission(scope)).toBeNull();
+
+        writeOperation("mask-new");
+        clearWorkbenchMaskPendingSubmission(scope, original.clientOperationId);
+        expect(readWorkbenchMaskPendingSubmission(scope)?.clientOperationId).toBe("mask-new");
+
+        clearWorkbenchMaskPendingSubmission(scope, "mask-new");
+        expect(readWorkbenchMaskPendingSubmission(scope)).toBeNull();
+        clearWorkbenchMaskPendingSubmission(scope, original.clientOperationId);
+        expect(readWorkbenchMaskPendingSubmission(scope)).toBeNull();
     });
 
     test("rejects a double submit until the exact operation releases the session lock", () => {

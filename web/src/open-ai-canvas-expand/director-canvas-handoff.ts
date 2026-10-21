@@ -6,6 +6,7 @@ import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use
 import { createCanvasProjectWithRemoteSync, loadAssetsForUse, loadCanvasProjectForEditing } from "@/services/user-data-sync";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { expandResourceFileURL, getExpandResource } from "./generation-api";
+import { normalizeDirectorSelection, type DirectorSkillSelection, type DirectorSkillSnapshot } from "./director-skills";
 
 const STORAGE_PREFIX = "director-canvas-handoff-v1";
 const STORAGE_INDEX_KEY = `${STORAGE_PREFIX}:contexts`;
@@ -30,6 +31,8 @@ export type StartDirectorHandoffInput = {
     assetIds?: readonly string[];
     resources?: readonly DirectorHandoffResource[];
     expectedUserScope?: string;
+    skillSelection?: DirectorSkillSelection;
+    skillSnapshots?: readonly DirectorSkillSnapshot[];
 };
 
 export type DirectorHandoffNavigation = {
@@ -50,6 +53,9 @@ export type StoredDirectorHandoff = {
     resourcePayloads: InsertAssetPayload[];
     createdAt: string;
     preparedAt?: string;
+    skillIds?: string[];
+    skillSelection?: DirectorSkillSelection;
+    skillSnapshots?: DirectorSkillSnapshot[];
 };
 
 function cleanId(value: string) {
@@ -109,7 +115,23 @@ function normalizeInput(input: StartDirectorHandoffInput) {
     if (!assetIds.length && ![...resourceById.values()].some((item) => item.kind === "image")) throw new Error("超级编导至少需要一张参考图片");
     const durationSeconds = input.durationSeconds;
     if (durationSeconds !== undefined && (!Number.isFinite(durationSeconds) || durationSeconds <= 0)) throw new Error("目标时长必须大于 0 秒");
-    return { contextId, prompt, language: input.language?.trim() || undefined, durationSeconds, assetIds, resources: [...resourceById.values()] };
+    const skillSelection = input.skillSelection ? normalizeDirectorSelection(input.skillSelection) : undefined;
+    const skillSnapshots = input.skillSnapshots?.map((skill) => ({ ...skill }));
+    const skillIds = skillSelection?.skillIds.slice();
+    if (skillSelection) directorHandoffSkillIds({ skillSelection, skillSnapshots, skillIds });
+    return { contextId, prompt, language: input.language?.trim() || undefined, durationSeconds, assetIds, resources: [...resourceById.values()], skillSelection, skillSnapshots, skillIds };
+}
+
+/** Missing legacy intent must never be interpreted as an explicit no-skill choice. */
+export function directorHandoffSkillIds(record: Pick<StoredDirectorHandoff, "skillIds" | "skillSelection" | "skillSnapshots">): readonly string[] {
+    if (!record.skillSelection || !Array.isArray(record.skillIds)) throw new Error("此旧编导记录尚未确认技能，请返回视频工作台重新选择并确认，再继续交接");
+    const selection = normalizeDirectorSelection(record.skillSelection);
+    if (JSON.stringify(selection.skillIds) !== JSON.stringify(record.skillIds)) throw new Error("编导技能记录不一致，请返回工作台重新选择");
+    const snapshots = record.skillSnapshots;
+    if (!Array.isArray(snapshots) || snapshots.length !== selection.skillIds.length || snapshots.some((skill, index) => !skill || skill.skillId !== selection.skillIds[index] || typeof skill.skillName !== "string" || !skill.skillName.trim())) {
+        throw new Error("编导技能身份快照缺失，请返回工作台重新确认");
+    }
+    return Object.freeze([...selection.skillIds]);
 }
 
 async function resourcePayloads(resources: DirectorHandoffResource[], scope: string): Promise<InsertAssetPayload[]> {
@@ -170,6 +192,7 @@ async function readStored(contextId: string, scope = getActiveUserScope()) {
     ) {
         throw new Error("超级编导交接记录无效，请新建编导任务");
     }
+    if (record.skillSelection !== undefined || record.skillIds !== undefined || record.skillSnapshots !== undefined) directorHandoffSkillIds(record);
     rememberContext(scope, contextId);
     return record as StoredDirectorHandoff;
 }
@@ -233,12 +256,14 @@ function preparedInputChanged(record: StoredDirectorHandoff, normalized: ReturnT
         record.prompt !== normalized.prompt ||
         record.language !== normalized.language ||
         record.durationSeconds !== normalized.durationSeconds ||
+        JSON.stringify(record.skillSelection) !== JSON.stringify(normalized.skillSelection) ||
+        JSON.stringify(record.skillIds) !== JSON.stringify(normalized.skillIds) ||
         !same(record.assetIds, normalized.assetIds) ||
         !same(storedResources, requestedResources)
     );
 }
 
-function navigationPath(record: StoredDirectorHandoff) {
+export function directorHandoffNavigationPath(record: StoredDirectorHandoff) {
     if (record.preparedAt) return `/canvas/${encodeURIComponent(record.canvasId)}?agent=1`;
     const params = new URLSearchParams({ mode: "director", director: record.contextId });
     return `/canvas/${encodeURIComponent(record.canvasId)}?${params.toString()}`;
@@ -272,6 +297,9 @@ export async function startOrResumeDirectorHandoff(input: StartDirectorHandoffIn
                       prompt: normalized.prompt,
                       language: normalized.language,
                       durationSeconds: normalized.durationSeconds,
+                      skillIds: normalized.skillIds,
+                      skillSelection: normalized.skillSelection,
+                      skillSnapshots: normalized.skillSnapshots,
                       assetIds: normalized.assetIds,
                       resourcePayloads: await resourcePayloads(normalized.resources, scope),
                   };
@@ -281,7 +309,7 @@ export async function startOrResumeDirectorHandoff(input: StartDirectorHandoffIn
                 await flushCanvasStorePersistence();
                 assertSession(scope, epoch);
             }
-            return { canvasId: next.canvasId, path: navigationPath(next), resumed: true };
+            return { canvasId: next.canvasId, path: directorHandoffNavigationPath(next), resumed: true };
         }
 
         if (!useCanvasStore.getState().hydrated) throw new Error("画布资料正在加载，请稍后继续");
@@ -298,6 +326,9 @@ export async function startOrResumeDirectorHandoff(input: StartDirectorHandoffIn
             prompt: normalized.prompt,
             language: normalized.language,
             durationSeconds: normalized.durationSeconds,
+            skillIds: normalized.skillIds,
+            skillSelection: normalized.skillSelection,
+            skillSnapshots: normalized.skillSnapshots,
             assetIds: normalized.assetIds,
             resourcePayloads: payloads,
             createdAt: new Date().toISOString(),
@@ -305,7 +336,7 @@ export async function startOrResumeDirectorHandoff(input: StartDirectorHandoffIn
         await saveStored(record, scope, epoch);
         await flushCanvasStorePersistence();
         assertSession(scope, epoch);
-        return { canvasId: record.canvasId, path: navigationPath(record), resumed: false, syncError: created.syncError };
+        return { canvasId: record.canvasId, path: directorHandoffNavigationPath(record), resumed: false, syncError: created.syncError };
     })().finally(() => {
         if (inFlight.get(operationKey) === operation) inFlight.delete(operationKey);
     });
@@ -318,6 +349,14 @@ export async function loadDirectorHandoff(contextId: string, canvasId: string) {
     const epoch = sessionEpoch(scope);
     const record = await readStored(cleanId(contextId), scope);
     if (!record || record.canvasId !== canvasId) throw new Error("超级编导交接记录与当前画布不匹配");
+    assertSession(scope, epoch);
+    return record;
+}
+
+export async function findDirectorHandoff(contextId: string, expectedUserScope?: string) {
+    const scope = assertScope(expectedUserScope);
+    const epoch = sessionEpoch(scope);
+    const record = await readStored(cleanId(contextId), scope);
     assertSession(scope, epoch);
     return record;
 }
@@ -340,6 +379,9 @@ export function directorAgentPrompt(record: StoredDirectorHandoff) {
         "请作为本项目的超级编导，先分析已选焦点素材和创作需求，再提出可执行的脚本、镜头与制作步骤。",
         `创作需求：${record.prompt}`,
         ...constraints,
+        ...(record.skillSelection?.mode === "general" ? ["本轮模式：通用 Agent（未预选场景技能）"] : []),
+        ...(record.skillSelection?.presetName ? [`本轮技能场景：${record.skillSelection.presetName}`] : []),
+        ...(record.skillSnapshots?.length ? [`本轮真实技能：${record.skillSnapshots.map((skill) => `${skill.skillName}（${skill.skillId}）`).join("、")}`] : []),
         "涉及模型生成或付费操作时，继续使用当前 Agent 的审批与费用确认流程。",
     ].join("\n");
 }

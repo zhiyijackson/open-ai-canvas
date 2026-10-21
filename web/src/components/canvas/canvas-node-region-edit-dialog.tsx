@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
-import { Button } from "antd";
+import { App, Button } from "antd";
 import { ArrowUp, Redo2, RotateCcw, SquareDashed, Undo2, X } from "lucide-react";
 
 import { AppModal } from "@/components/ui/product/app-modal";
@@ -47,6 +47,9 @@ type RegionEditorProps = {
     image: { url: string; storageKey?: string };
     open: boolean;
     config: AiConfig;
+    busy?: boolean;
+    confirmDiscard?: boolean;
+    submissionRecovery?: ReactNode;
     onClose: () => void;
     onConfirm: (payload: CanvasImageRegionEditPayload) => void;
 };
@@ -79,7 +82,8 @@ function focusEditorEnd(container: HTMLElement | null) {
     editable.scrollTop = editable.scrollHeight;
 }
 
-function RegionEditor({ image, config, onClose, onConfirm }: RegionEditorProps) {
+function RegionEditor({ image, config, busy = false, confirmDiscard = false, submissionRecovery, onClose, onConfirm }: RegionEditorProps) {
+    const { modal } = App.useApp();
     const surfaceRef = useRef<HTMLDivElement>(null);
     const editorRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<DragState | null>(null);
@@ -101,6 +105,7 @@ function RegionEditor({ image, config, onClose, onConfirm }: RegionEditorProps) 
         return { ...config, model, imageModel: model };
     });
     const size = source?.size || null;
+    const initialSettings = useRef(settings);
 
     useEffect(() => {
         const request = new AbortController();
@@ -271,6 +276,7 @@ function RegionEditor({ image, config, onClose, onConfirm }: RegionEditorProps) 
     };
 
     const submit = () => {
+        if (busy || submissionRecovery) return;
         if (!source || !size) return;
         if (!regions.length) return setError("请先在图片上框选至少一个区域");
         if (!trimmedPrompt) return setError("请写下修改要求，可用 @区域1 指定区域");
@@ -299,9 +305,17 @@ function RegionEditor({ image, config, onClose, onConfirm }: RegionEditorProps) 
               }
             : {};
 
+    const close = () => {
+        if (busy) return;
+        if (confirmDiscard && (prompt.trim() || regions.length || JSON.stringify(initialSettings.current) !== JSON.stringify(settings))) {
+            modal.confirm({ title: "放弃局部编辑修改？", content: "关闭会放弃当前选区、修改要求和设置；已保存的待确认提交仍可恢复。", okText: "放弃修改并关闭", cancelText: "继续编辑", onOk: onClose });
+        } else onClose();
+    };
+
     return (
-        <AppModal open centered flush closable={false} footer={null} width="min(1360px, calc(100vw - 48px))" onCancel={onClose} aria-label="区域标注">
-            <div className="rgn" style={{ "--rgn-color": IMAGE_REGION_COLOR } as CSSProperties}>
+        <AppModal open centered flush closable={false} footer={null} width="min(1360px, calc(100vw - 48px))" onCancel={close} keyboard={!busy} maskClosable={!busy} aria-label="区域标注">
+            {submissionRecovery}
+            <div inert={busy || Boolean(submissionRecovery)} className="rgn" style={{ "--rgn-color": IMAGE_REGION_COLOR } as CSSProperties}>
                 <section className="rgn-stage" aria-label="标注画面">
                     <div className="rgn-stage-hint">
                         <SquareDashed className="size-3.5" aria-hidden />
@@ -407,7 +421,7 @@ function RegionEditor({ image, config, onClose, onConfirm }: RegionEditorProps) 
                             <h2>区域标注</h2>
                             <p>框选区域后，用 @区域N 分别描述要怎么改</p>
                         </div>
-                        <button type="button" className="rgn-close" aria-label="关闭" onClick={onClose}>
+                        <button type="button" className="rgn-close" aria-label="关闭" disabled={busy} onClick={close}>
                             <X className="size-4" />
                         </button>
                     </header>
@@ -498,7 +512,7 @@ function RegionEditor({ image, config, onClose, onConfirm }: RegionEditorProps) 
                                 onConfigChange={(key, value) => setSettings((previous) => ({ ...previous, [key]: value }))}
                             />
                             <span className="rgn-footer-spacer" />
-                            <Button className="rgn-submit" type="primary" shape="round" icon={<ArrowUp className="size-4" strokeWidth={2.4} />} disabled={!canSubmit} onClick={submit}>
+                            <Button className="rgn-submit" type="primary" shape="round" icon={<ArrowUp className="size-4" strokeWidth={2.4} />} loading={busy} disabled={!canSubmit || busy || Boolean(submissionRecovery)} onClick={submit}>
                                 生成
                             </Button>
                         </div>

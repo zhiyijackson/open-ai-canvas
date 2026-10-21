@@ -77,6 +77,17 @@ import { useGlobalAgentStore, type AgentPrefillRequest } from "@/stores/use-glob
 
 export type CloudAgentPrefillRequest = AgentPrefillRequest;
 
+export function cloudAgentPrefillSkillIds(skillIds: readonly string[] | undefined, skills: readonly Skill[], ready: boolean): readonly string[] | undefined {
+    if (skillIds === undefined) return undefined;
+    if (!Array.isArray(skillIds) || skillIds.some((id) => typeof id !== "string" || !id.trim())) throw new Error("预填技能身份无效，请重新选择");
+    const ids = [...new Set(skillIds.map((id) => id.trim()))];
+    if (ids.length > 8) throw new Error("本轮最多启用 8 个技能");
+    if (ids.length && !ready) throw new Error("正在确认所需技能目录，首轮消息已暂停发送");
+    const missing = ids.filter((id) => !skills.some((skill) => skill.skillId === id && skill.isAdded && skill.status === 1));
+    if (missing.length) throw new Error(`所需技能尚未加入或当前不可用：${missing.join("、")}。请在原技能库加入后重试`);
+    return Object.freeze(ids);
+}
+
 type AgentPanelView = "chat" | "history" | "settings";
 
 function approvalStateFromRun(nextRun: AgentRun | null): ApprovalState | null {
@@ -134,8 +145,14 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
     const profileRequestRef = useRef(0);
     const { message: appMessage } = App.useApp();
     const [skills, setSkills] = useState<Skill[]>([]);
-    // 读到技能库后才允许剔除失效技能；读失败保留已选。
-    const [skillCatalogReady, setSkillCatalogReady] = useState(false);
+    const [skillsReady, setSkillsReady] = useState(false);
+    const [skillsReload, setSkillsReload] = useState(0);
+    const [skillsDirectoryError, setSkillsDirectoryError] = useState("");
+    const [skillPrefill, setSkillPrefill] = useState<CloudAgentPrefillRequest | null>(null);
+    const skillPrefillScopeRef = useRef("");
+    const skillsScopeRef = useRef("");
+    const skillScope = `${userId || "guest"}:${canvasId}`;
+    const skillsReadyForScope = skillsReady && skillsScopeRef.current === skillScope;
     const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
     const [marketSkills, setMarketSkills] = useState<Skill[]>([]);
     const [skillSearch, setSkillSearch] = useState("");
@@ -382,14 +399,33 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
     const statusLabel =
         status === "waiting_approval" ? "等待审批" : status === "queued" ? "排队中" : status === "running" ? "运行中" : status === "completed" ? "已完成" : status === "failed" ? "异常" : status === "cancelled" ? "已停止" : status === "rejected" ? "已拒绝" : "待命";
     const statusColor = status === "failed" ? "#e66b6b" : status === "rejected" || status === "cancelled" ? theme.node.muted : status === "waiting_approval" ? "#d6a24a" : status === "running" || status === "queued" ? "#69c29b" : theme.node.muted;
+    let prefillSkillsError = "";
+    try { cloudAgentPrefillSkillIds(skillPrefill?.skillIds, skills, skillsReadyForScope); } catch (cause) { prefillSkillsError = cause instanceof Error ? cause.message : String(cause); }
+
+    useEffect(() => {
+        if (skillPrefillScopeRef.current === skillScope || prefilledSubmissionRef.current?.skillIds === undefined) return;
+        skillPrefillScopeRef.current = "";
+        prefilledSubmissionRef.current = null;
+        setSkillPrefill(null);
+        setPendingAutoSubmit(null);
+    }, [skillScope]);
+
+    useEffect(() => {
+        if (!historyHydrated || !skillPrefill || prefillSkillsError || skillPrefillScopeRef.current !== skillScope) return;
+        const confirmed = cloudAgentPrefillSkillIds(skillPrefill.skillIds, skills, skillsReadyForScope);
+        if (confirmed) setSelectedSkillIds([...confirmed]);
+    }, [historyHydrated, prefillSkillsError, skillPrefill, skillScope, skills, skillsReadyForScope]);
 
     useEffect(() => {
         if (!prefillRequest || prefillRequest.id === lastPrefillIdRef.current) return;
         lastPrefillIdRef.current = prefillRequest.id;
         if (!prefillRequest.text.trim()) return;
         setPrompt((current) => appendAgentPromptPrefill(current, prefillRequest.displayText || prefillRequest.text));
-        prefilledSubmissionRef.current = prefillRequest;
-        setPendingAutoSubmit(prefillRequest.autoSubmit ? prefillRequest : null);
+        const frozen = { ...prefillRequest, ...(prefillRequest.skillIds !== undefined ? { skillIds: Object.freeze([...prefillRequest.skillIds]) } : {}) };
+        prefilledSubmissionRef.current = frozen;
+        skillPrefillScopeRef.current = skillScope;
+        setSkillPrefill(frozen.skillIds !== undefined ? frozen : null);
+        setPendingAutoSubmit(prefillRequest.autoSubmit ? frozen : null);
         setView("chat");
     }, [prefillRequest]);
 
@@ -436,19 +472,26 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
     useEffect(() => {
         let active = true;
         setSkills([]);
-        setSkillCatalogReady(false);
+        setSkillsReady(false);
+        setSkillsDirectoryError("");
+        let request = 0;
         const refresh = () => {
+            const currentRequest = ++request;
+            setSkillsReady(false);
             void listAddedSkills()
                 .then((result) => {
-                    if (!active) return;
+                    if (!active || currentRequest !== request) return;
                     setSkills(result.skills);
-                    setSkillCatalogReady(true);
+                    skillsScopeRef.current = skillScope;
+                    setSkillsReady(true);
+                    setSkillsDirectoryError("");
                     setMessages((current) => current.filter((message) => message.id !== "skills-load-error"));
                 })
                 .catch((cause) => {
-                    if (!active) return;
-                    setSkillCatalogReady(false);
-                    setMessages((current) => appendAgentError(current, "skills-load-error", cause, "技能库读取失败"));
+                    if (active && currentRequest === request) {
+                        setSkillsDirectoryError("技能库读取失败，首轮技能意图已保留");
+                        setMessages((current) => appendAgentError(current, "skills-load-error", cause, "技能库读取失败"));
+                    }
                 });
         };
         refresh();
@@ -459,16 +502,16 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
             window.removeEventListener("canvas-skills-changed", refresh);
             window.removeEventListener("focus", refresh);
         };
-    }, [open, userId]);
+    }, [open, userId, canvasId, skillsReload]);
 
     // 本地对话会留着已删除技能的 ID，按当前技能库剔除，避免发送时整轮被拒。
     useEffect(() => {
-        if (!skillCatalogReady) return;
+        if (!skillsReadyForScope) return;
         const reconciled = reconcileSkillSelection(selectedSkillIds, skills);
         if (!reconciled.removedSkillIds.length) return;
         setSelectedSkillIds(reconciled.skillIds);
         void appMessage.warning(`已取消 ${reconciled.removedSkillIds.length} 个已失效的技能：该技能已被删除或取消安装`);
-    }, [appMessage, selectedSkillIds, skillCatalogReady, skills]);
+    }, [appMessage, selectedSkillIds, skillsReadyForScope, skills]);
 
     useEffect(() => {
         if (view !== "settings" && !skillsOpen) return;
@@ -862,33 +905,40 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
         }
     };
 
-    const submit = async (override?: string, options?: CloudAgentMessagePresentation & { id?: number; requiresVision?: boolean }) => {
+    const submit = async (override?: string, options?: CloudAgentMessagePresentation & { id?: number; requiresVision?: boolean; skillIds?: readonly string[] }) => {
         if (!accountIsCurrent() || cloudOpeningRef.current || canvasId && !cloudHistoryReady && !pendingSubmission.current?.request || modelRestoreError && !pendingSubmission.current?.request) return;
         const activity = canvasId ? canvasEditLeases.agent(canvasId) : null;
         if (activity && activity.runId !== run?.id && !pendingSubmission.current?.request) return;
         const draft = (override ?? prompt).trim();
         const pendingRequest = pendingSubmission.current;
         const prefilled = prefilledSubmissionRef.current;
+        if (prefilled?.skillIds !== undefined && skillPrefillScopeRef.current !== skillScope) return;
         const matchesPending = pendingRequest?.request && pendingRequest.displayText === draft;
         const matchesPrefill = prefilled?.displayText === draft;
         const value = matchesPending ? pendingRequest.request!.prompt : matchesPrefill ? prefilled!.text : draft;
         options = matchesPending ? { ...(matchesPrefill ? prefilled : options), displayText: pendingRequest.displayText, canvasReferenceNodeId: pendingRequest.canvasReferenceNodeId } : matchesPrefill ? prefilled! : options;
+        if (prefilled?.skillIds !== undefined) options = { ...options, id: options?.id ?? prefilled.id, skillIds: prefilled.skillIds };
         if (running && !pendingRequest?.request) {
             await interject(value);
             return;
         }
         if (!value || busy || (run && connectionStatus !== "connected" && !pendingRequest?.request) || submissionRequestRef.current || !historyHydrated || !pendingHydrated || currentScope.current !== conversationScope) return;
         const scope = conversationScope;
+        const ownerScope = getActiveUserScope();
+        const explicitSkills = options?.skillIds !== undefined;
+        const isCurrentSubmission = () => accountIsCurrent() && currentScope.current === scope && (!explicitSkills || (skillPrefillScopeRef.current === skillScope && getActiveUserScope() === ownerScope && useUserStore.getState().user?.id === userId));
         submissionRequestRef.current = true;
         setBusy(true);
         let accepted = false;
         let requestSent = false;
         try {
+            // Capture the validated set before awaiting anything; React selection updates do not own this request.
+            const confirmedSkillIds = cloudAgentPrefillSkillIds(options?.skillIds, skills, skillsReadyForScope);
             const effectiveModel = options?.requiresVision ? selectImageInspectionModel(config, selectedModel) : selectedModel;
             if (options?.requiresVision && !effectiveModel) throw new Error("当前没有配置支持图片输入的文本模型，请在模型能力设置中为一个文本模型开启图片输入后重试");
             const pending = pendingSubmission.current;
             // 目录已读到就以技能库为准，防止刷新与发送之间带出失效 ID。
-            const usableSkillIds = skillCatalogReady ? reconcileSkillSelection(selectedSkillIds, installedSkills).skillIds : selectedSkillIds;
+            const usableSkillIds = skillsReadyForScope ? reconcileSkillSelection(selectedSkillIds, installedSkills).skillIds : selectedSkillIds;
             // An ambiguous previous POST owns its body/key until reconciled.
             // Editing model settings or prompt must not silently create a new charge.
             if (pending?.request && pending.request.prompt !== value) throw new Error("上一条请求结果待确认，请先原样重试上一条消息，再发送新要求");
@@ -896,12 +946,12 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
                 if (profileLoading) throw new Error("正在确认长期偏好快照，请稍后再发送");
                 if (!profileView || profileError) throw new Error("长期偏好快照尚未确认，请重新读取后再发送");
                 const capabilities = await getAgentCapabilities();
-                if (!accountIsCurrent() || currentScope.current !== scope) return;
+                if (!isCurrentSubmission()) return;
                 if (!capabilities.permissionModes.includes(permissionMode)) throw new Error("当前后端不支持所选 Agent 权限，请更新后端");
-                if (selectedSkillIds.length && !capabilities.skills) throw new Error("当前后端尚未接入技能库");
+                if ((confirmedSkillIds ?? selectedSkillIds).length && !capabilities.skills) throw new Error("当前后端尚未接入技能库");
                 // 只有当前页面是画布时才绑定画布；其他页面发出的是平台级对话轮次。
                 if (canvasId) await prepareCanvasForCloudAction(canvasId);
-                if (!accountIsCurrent() || currentScope.current !== scope) return;
+                if (!isCurrentSubmission()) return;
                 const agentConfig = { ...config, model: effectiveModel };
                 const requestConfig = resolveModelRequestConfig(agentConfig, effectiveModel);
                 const logicalModelId = logicalModelIDForConfig(agentConfig);
@@ -912,7 +962,7 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
                     profileRevision: profileView.revision,
                     model: modelOptionName(effectiveModel) || undefined,
                     ...(logicalModelId ? { logicalModelId } : requestConfig.channelId ? { channelId: requestConfig.channelId, channelModelKey: modelOptionName(effectiveModel) || undefined } : {}),
-                    skillIds: [...new Set([...usableSkillIds, ...resolveSkillMentions(value, installedSkills).map((skill) => skill.skillId)])],
+                    skillIds: confirmedSkillIds !== undefined ? [...confirmedSkillIds] : [...new Set([...usableSkillIds, ...resolveSkillMentions(value, installedSkills).map((skill) => skill.skillId)])],
                     focusNodeIds: canvasId ? selectedNodeIds.slice(0, 8) : [],
                     focusNodeOmittedCount: canvasId ? Math.max(0, selectedNodeIds.length - 8) : 0,
                     permissionMode,
@@ -926,7 +976,7 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
                 // Persist before sending. A failed local save must not submit a request
                 // whose recovery identity will disappear on reload.
                 await waitForCanvasSync(saveCloudAgentPendingSubmission(activeConversationId, next, accountScope));
-                if (!accountIsCurrent() || currentScope.current !== scope) return;
+                if (!isCurrentSubmission()) return;
                 pendingSubmission.current = next;
             }
             const submission = pendingSubmission.current!;
@@ -952,31 +1002,34 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
                     run,
                     model: request.model || effectiveModel || undefined,
                     permissionMode,
-                    skillIds: usableSkillIds,
+                    skillIds: options?.skillIds !== undefined ? [...(request.skillIds || [])] : usableSkillIds,
                     createdAt: existing?.createdAt || now,
                     updatedAt: now,
                 },
                 ...conversations.filter((item) => item.id !== activeConversationId),
             ], accountScope));
-            if (!accountIsCurrent() || currentScope.current !== scope) return;
+            if (!isCurrentSubmission()) return;
             if (options?.id !== undefined) await onPrefillPendingPersisted?.(options.id);
-            if (!accountIsCurrent() || currentScope.current !== scope) return;
+            if (!isCurrentSubmission()) return;
             setPrompt("");
             prefilledSubmissionRef.current = null;
+            setSkillPrefill(null);
+            if (options?.skillIds !== undefined) setSelectedSkillIds([...(request.skillIds || [])]);
             setMessages(nextMessages);
             requestSent = true;
             const result = submission.parentRunId ? await sendAgentMessage(submission.parentRunId, request) : await createAgentRun(request);
             accepted = true;
-            if (accountIsCurrent() && currentScope.current === scope) {
+            if (isCurrentSubmission()) {
                 replayCursorRef.current = { runId: result.run.id, seq: 0 };
                 cloudRunTransitionRef.current = result.run.id;
                 setRun(result.run);
                 setConversations((current) => current.map((item) => item.id === activeConversationId ? { ...item, serverConversationId: result.run.conversationId, run: result.run, lastEventSeq: 0 } : item));
             }
+            if (!isCurrentSubmission()) return;
             await waitForCanvasSync(clearCloudAgentPendingSubmission(activeConversationId, accountScope));
-            if (accountIsCurrent() && currentScope.current === scope) pendingSubmission.current = null;
+            if (isCurrentSubmission()) pendingSubmission.current = null;
         } catch (cause) {
-            if (!accountIsCurrent() || currentScope.current !== scope) return;
+            if (!isCurrentSubmission()) return;
             if (cause instanceof CanvasSyncPendingError) return;
             if (canvasId) canvasEditLeases.agentRejected(canvasId, cause);
             if (!accepted) {
@@ -1016,16 +1069,18 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
             setMessages((current) => appendAgentError(current, `submit-error-${activeConversationId}`, cause, agentSubmissionErrorTitle(cause, accepted, requestSent)));
         } finally {
             submissionRequestRef.current = false;
-            if (accountIsCurrent() && currentScope.current === scope) setBusy(false);
+            if (isCurrentSubmission()) setBusy(false);
         }
     };
 
     useEffect(() => {
         const pending = pendingAutoSubmit;
-        if (!pending || !historyHydrated || !pendingHydrated || !cloudHistoryReady || modelRestoreError || profileLoading || !profileView || profileError || busy || running || otherAgentRunning) return;
+        if (!pending || !historyHydrated || !pendingHydrated || !cloudHistoryReady || modelRestoreError || profileLoading || !profileView || profileError || busy || running || otherAgentRunning || presetApplyingId) return;
+        if (pending.skillIds !== undefined && skillPrefillScopeRef.current !== skillScope) return;
+        try { cloudAgentPrefillSkillIds(pending.skillIds, skills, skillsReadyForScope); } catch { return; }
         setPendingAutoSubmit(null);
-        void submit(pending.text, { id: pending.id, requiresVision: pending.requiresVision, displayText: pending.displayText, canvasReferenceNodeId: pending.canvasReferenceNodeId });
-    }, [busy, historyHydrated, cloudHistoryReady, modelRestoreError, otherAgentRunning, pendingAutoSubmit, pendingHydrated, profileError, profileLoading, profileView, running]);
+        void submit(pending.text, { id: pending.id, requiresVision: pending.requiresVision, displayText: pending.displayText, canvasReferenceNodeId: pending.canvasReferenceNodeId, skillIds: pending.skillIds });
+    }, [busy, historyHydrated, cloudHistoryReady, modelRestoreError, otherAgentRunning, pendingAutoSubmit, pendingHydrated, presetApplyingId, profileError, profileLoading, profileView, running, skillScope, skills, skillsReadyForScope]);
 
     const undoCanvasStep = async (target: AgentCanvasUndoTarget) => {
         const activeRun = run;
@@ -1424,6 +1479,13 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
                                                     重新连接
                                                 </Button>
                                             ) : null}
+                                        </div>
+                                    ) : null}
+                                    {skillPrefill && prefillSkillsError ? (
+                                        <div role="status" className="flex flex-wrap items-center gap-2 px-5 py-2 text-xs" style={{ color: theme.node.muted }}>
+                                            <span>{skillsDirectoryError || prefillSkillsError}</span>
+                                            <Button size="small" onClick={() => setSkillsOpen(true)}>原技能库</Button>
+                                            <Button size="small" onClick={() => setSkillsReload((value) => value + 1)}>重新读取技能</Button>
                                         </div>
                                     ) : null}
                                     <AgentConversation

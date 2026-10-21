@@ -1,0 +1,23 @@
+/* rc-trigger measures with temporary left/top values. The host's reduced-motion
+   duration must never animate those geometry changes on workbench portals. */
+.oacx-workbench-popup {
+    transition-property: opacity, transform !important;
+}
+
+.oacx-workbench-settings-content {
+    width: min(320px, calc(100vw - 56px));
+}
+
+.oacx-workbench-settings-popup .ant-popover-container {
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    /* Keep animationend for rc-motion while preventing scaled align measurements. */
+    .oacx-workbench-popup {
+        transform: none !important;
+    }
+}

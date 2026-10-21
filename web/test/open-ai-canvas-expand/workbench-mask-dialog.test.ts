@@ -1,0 +1,12 @@
+import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+
+test("native mask dialog preserves edits and guards busy, recovery and discard interactions", () => {
+    // Source/canvas and complex control mocks cannot leak into other native regressions.
+    const result = spawnSync(process.execPath, [resolve(import.meta.dir, "workbench-mask-dialog.runner.tsx")], {
+        cwd: resolve(import.meta.dir, "../.."), encoding: "utf8", timeout: 20_000,
+    });
+    expect({ status: result.status, stdout: result.stdout, stderr: result.stderr }).toMatchObject({ status: 0 });
+    expect(result.stdout).toContain("workbench-mask-dialog: 5 scenarios passed");
+});

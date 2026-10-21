@@ -217,6 +217,10 @@ export function createExpandWorkbenchRuntime(kind: WorkbenchKind, scope: string)
             onProgress?.(file.size, file.size);
             return resource;
         },
-        resolveResourceURL: async (resourceId) => expandResourceFileURL(resourceId),
+        resolveResourceURL: (resourceId) => inSession(async (signal) => {
+            const resource = await getExpandResource(resourceId, signal);
+            if (resource.status !== "ready") throw new Error(resource.status === "deleted" ? "参考素材已删除，请重新选择" : resource.error || "参考素材尚不可用，请重新选择");
+            return expandResourceFileURL(resourceId);
+        }),
     };
 }
