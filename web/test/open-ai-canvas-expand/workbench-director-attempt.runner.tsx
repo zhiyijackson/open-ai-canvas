@@ -20,10 +20,14 @@ const calls: Array<{ contextId: string; userId: string; pending: ReturnType<type
 const paths: string[] = [];
 let userId = "user-a";
 const query = { data: { presets: [] }, isPending: false, isError: false, refetch: async () => {} };
-mock.module("antd", () => ({ App: { useApp: () => ({ message: { warning: () => {}, error: () => {} } }) } }));
+const realSkill = { skillId: "skill-a", skillName: "真实技能", isAdded: true, status: 1, versionId: "v-a", version: "1" };
+const skills = [realSkill, { ...realSkill, skillId: "skill-b", skillName: "第二项真实技能" }];
+const added = { data: { skills: [] as typeof realSkill[] }, isPending: false, isError: false, refetch: async () => {} };
+const installs: Array<{ id: string; pending: ReturnType<typeof defer<void>> }> = [];
+mock.module("antd", () => ({ App: { useApp: () => ({ message: { warning: () => {}, error: () => {}, success: () => {} } }) } }));
 mock.module("react-router", () => ({ useNavigate: () => (path: string) => paths.push(path) }));
-mock.module("@tanstack/react-query", () => ({ useQuery: () => query, useQueries: () => [] }));
-mock.module("@/services/api/skills", () => ({ getSkill: async () => {}, listSkillPresets: async () => ({ presets: [] }) }));
+mock.module("@tanstack/react-query", () => ({ useQuery: (options: { queryKey: string[] }) => options.queryKey[0] === "workbench-director-added-skills" ? added : query, useQueries: ({ queries }: { queries: Array<{ queryKey: string[] }> }) => queries.map((q) => ({ data: { skill: skills.find(s => s.skillId === q.queryKey[2]) }, isPending: false, isError: false })) }));
+mock.module("@/services/api/skills", () => ({ addSkill: async (id: string) => { const pending = defer<void>(); installs.push({ id, pending }); await pending.promise; added.data.skills.push(skills.find(s => s.skillId === id)!); }, listAddedSkills: async () => added.data, getSkill: async () => {}, listSkillPresets: async () => ({ presets: [] }) }));
 mock.module("@/stores/use-user-store", () => ({ useUserStore: { getState: () => ({ user: { id: userId } }) } }));
 mock.module("@/open-ai-canvas-expand/director-canvas-handoff", () => ({
     findDirectorHandoff: async (contextId: string, scope: string) => { reads.push(`${scope}:${contextId}`); return records.get(`${scope}:${contextId}`) || null; },
@@ -61,7 +65,45 @@ const durable = (call: (typeof calls)[number]) => {
 
 try {
     await render();
-    await act(async () => latest.selectGeneral());
+    await act(async () => { await latest.submit(); });
+    assert.equal(calls.length, 0, "empty director selection cannot create a canvas");
+    await act(async () => latest.setSelection({ mode: "general", skillIds: [] }));
+    await act(async () => { await latest.submit(); });
+    assert.equal(calls.length, 0, "historical general intent cannot start a new director run");
+    await act(async () => latest.setSelection({ mode: "custom", skillIds: ["skill-a", "skill-b"] }));
+    let installation!: Promise<void>;
+    await act(async () => { installation = latest.installMissingSkills(); });
+    await act(async () => { await latest.installMissingSkills(); });
+    assert.equal(installs.length, 1, "double clicks do not install the same skills twice");
+    await act(async () => installs[0]!.pending.resolve());
+    assert.equal(installs[1]!.id, "skill-b");
+    await act(async () => installs[1]!.pending.reject(new Error("installation failed")));
+    await installation;
+    await render();
+    assert.deepEqual(latest.missingSkills.map(s => s.skillId), ["skill-b"], "partial installation retains the successful part");
+    assert.deepEqual(latest.selection?.skillIds, ["skill-a", "skill-b"], "installation never removes a required skill");
+    await act(async () => { installation = latest.installMissingSkills(); });
+    assert.equal(installs[2]!.id, "skill-b", "retry installs only the missing skill");
+    await act(async () => installs[2]!.pending.resolve());
+    await installation;
+    await render();
+    assert.equal(latest.skillsIssue, undefined);
+    assert.equal(calls.length, 0, "successful installation never starts Agent automatically");
+    added.data.skills = [];
+    await render();
+    await act(async () => { installation = latest.installMissingSkills(); });
+    await act(async () => latest.setSelection({ mode: "custom", skillIds: ["skill-b"] }));
+    await act(async () => installs[3]!.pending.resolve());
+    await installation;
+    await render();
+    assert.equal(installs.length, 4, "a scene change stops remaining installs from an older attempt");
+    assert.deepEqual(latest.selection?.skillIds, ["skill-b"], "late installation does not rewrite a newer scene");
+    added.data.skills = [];
+    await act(async () => latest.setSelection({ mode: "custom", skillIds: ["skill-a"] }));
+    await act(async () => { await latest.submit(); });
+    assert.equal(calls.length, 0, "uninstalled skills block before canvas creation");
+    added.data.skills = [realSkill];
+    await render();
     const first = await start();
     await act(async () => { void latest.submit(); });
     assert.equal(calls.length, 1, "double clicks share one active attempt");

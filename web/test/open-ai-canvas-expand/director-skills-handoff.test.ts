@@ -32,22 +32,20 @@ describe("director durable skill intent", () => {
         expect(directorAgentPrompt(stored)).toContain("真实导演（skill-a）");
         expect(directorAgentPrompt(stored)).not.toContain("late-name");
         await markDirectorHandoffPrepared(request.contextId, created.canvasId);
-        await expect(startOrResumeDirectorHandoff({ ...request, skillSelection: { mode: "general", skillIds: [] }, skillSnapshots: [] })).rejects.toThrow("Agent 继续对话");
+        await expect(startOrResumeDirectorHandoff({ ...request, skillSelection: { mode: "custom", skillIds: ["skill-b"] }, skillSnapshots: [{ skillId: "skill-b", skillName: "其他导演", versionId: "v-b", version: "1" }] })).rejects.toThrow("Agent 继续对话");
         const resumed = await startOrResumeDirectorHandoff({ ...request, skillSelection: { ...selection, skillIds: ["skill-a"] } });
         expect(resumed.canvasId).toBe(created.canvasId);
         expect(resumed.path).toContain("agent=1");
         expect(useCanvasStore.getState().projects).toHaveLength(1);
     });
 
-    test("distinguishes legacy unresolved intent from an explicit general handoff", async () => {
-        const legacy = await startOrResumeDirectorHandoff(input("legacy-unresolved"));
-        const record = await loadDirectorHandoff("legacy-unresolved", legacy.canvasId);
-        expect(() => directorHandoffSkillIds(record)).toThrow("旧编导记录尚未确认技能");
-        await markDirectorHandoffPrepared("legacy-unresolved", legacy.canvasId);
-        const resumed = await startOrResumeDirectorHandoff(input("legacy-unresolved"));
-        expect(resumed.path).toContain("agent=1");
-        const general = await startOrResumeDirectorHandoff({ ...input("explicit-general"), skillSelection: { mode: "general", skillIds: [] }, skillSnapshots: [] });
-        expect(directorHandoffSkillIds(await loadDirectorHandoff("explicit-general", general.canvasId))).toEqual([]);
+    test("rejects unresolved, historical general and empty custom inputs before canvas creation", async () => {
+        expect(() => directorHandoffSkillIds({})).toThrow("旧编导记录尚未确认技能");
+        await expect(startOrResumeDirectorHandoff(input("legacy-unresolved"))).rejects.toThrow("选择编导场景");
+        for (const mode of ["general", "custom"] as const) {
+            await expect(startOrResumeDirectorHandoff({ ...input(`empty-${mode}`), skillSelection: { mode, skillIds: [] }, skillSnapshots: [] })).rejects.toThrow("至少需要一项真实技能");
+        }
+        expect(useCanvasStore.getState().projects).toHaveLength(0);
     });
 
     test("rejects incomplete skill snapshots before creating any canvas", async () => {

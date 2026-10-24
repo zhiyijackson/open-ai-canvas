@@ -31,6 +31,13 @@ export function videoDirectorPresets(presets: SkillPreset[]) {
     return presets.filter((preset) => videoPresetIds.has(preset.presetId));
 }
 
+/** Historical no-skill records remain readable; every new director submission requires skills. */
+export function directorSelectionIssue(selection: DirectorSkillSelection | null | undefined): string | undefined {
+    if (!selection) return "请选择编导场景或从技能库启用技能";
+    if (selection.mode === "general" || !selection.skillIds.length) return "视频编导至少需要一项真实技能，请重新选择场景或技能";
+    try { normalizeDirectorSelection(selection); } catch (error) { return error instanceof Error ? error.message : "编导技能选择无效"; }
+}
+
 export function normalizeDirectorSelection(selection: DirectorSkillSelection): DirectorSkillSelection {
     if (!["scene", "custom", "general"].includes(selection.mode) || !Array.isArray(selection.skillIds)) throw new Error("编导技能选择无效，请重新选择");
     if (selection.skillIds.some((id) => typeof id !== "string" || !id.trim())) throw new Error("编导技能身份无效，请重新选择");

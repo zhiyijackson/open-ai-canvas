@@ -4,11 +4,11 @@ import { useNavigate } from "react-router";
 import { useQueries, useQuery } from "@tanstack/react-query";
 
 import type { WorkbenchKind } from "@/services/api/workbench";
-import { getSkill, listSkillPresets } from "@/services/api/skills";
+import { addSkill, getSkill, listAddedSkills, listSkillPresets } from "@/services/api/skills";
 import { useUserStore } from "@/stores/use-user-store";
 import { directorHandoffNavigationPath, findDirectorHandoff, startOrResumeDirectorHandoff, type StoredDirectorHandoff } from "./director-canvas-handoff";
 import type { ExpandWorkbenchReference } from "./workbench-support";
-import { directorPresetForTool, directorSelectionFromPreset, normalizeDirectorSelection, snapshotDirectorSkills, videoDirectorPresets, type DirectorSkillSelection } from "./director-skills";
+import { directorPresetForTool, directorSelectionFromPreset, directorSelectionIssue, normalizeDirectorSelection, snapshotDirectorSkills, videoDirectorPresets, type DirectorSkillSelection } from "./director-skills";
 import { workbenchSessionEpoch } from "./workbench-session";
 
 type UseWorkbenchDirectorInput = {
@@ -47,18 +47,29 @@ export function useWorkbenchDirector({ kind, prompt, references, seconds, userId
     }, [contextId, handoffReadRevision, kind, userId]);
     const continueHandoff = () => { if (currentHandoff?.record) navigate(directorHandoffNavigationPath(currentHandoff.record)); };
     const [selection, setSelection] = useState<DirectorSkillSelection | null>(null);
+    const selectionRef = useRef(selection);
+    selectionRef.current = selection;
+    const [installingSkills, setInstallingSkills] = useState(false);
+    const installAttemptRef = useRef<object | null>(null);
     const [skillPickerOpen, setSkillPickerOpen] = useState(false);
     const presetQuery = useQuery({ queryKey: ["workbench-director-presets", userId], queryFn: listSkillPresets, enabled: kind === "video" });
+    const addedQuery = useQuery({ queryKey: ["workbench-director-added-skills", userId], queryFn: listAddedSkills, enabled: kind === "video" });
+    const installedSkills = addedQuery.data?.skills.filter((skill) => skill.isAdded) || [];
     const presets = videoDirectorPresets(presetQuery.data?.presets || []);
     const skillQueries = useQueries({ queries: (selection?.skillIds || []).map((id) => ({
         queryKey: ["workbench-director-skill", userId, id], queryFn: () => getSkill(id), enabled: kind === "video",
     })) });
     const selectedSkills = skillQueries.flatMap((query) => query.data ? [query.data.skill] : []);
-    const skillsLoading = Boolean(selection?.mode === "scene" && presetQuery.isPending) || skillQueries.some((query) => query.isPending);
+    const skillsLoading = addedQuery.isPending || Boolean(selection?.mode === "scene" && presetQuery.isPending) || skillQueries.some((query) => query.isPending);
     const skillsError = (!selection || selection.mode === "scene") && presetQuery.isError ? "场景目录读取失败，请重试"
-        : selection?.mode === "scene" && !presetQuery.isPending && !presets.some((preset) => preset.presetId === selection.presetId) ? "此场景预设当前不可用，请重试、重新选择或主动使用通用编导"
+        : selection?.mode === "scene" && !presetQuery.isPending && !presets.some((preset) => preset.presetId === selection.presetId) ? "此场景预设当前不可用，请重试或重新选择"
+        : addedQuery.isError ? "已加入技能读取失败，请重试"
         : skillQueries.some((query) => query.isError) || selectedSkills.some((skill) => skill.status !== 1) ? "部分技能已下架或无法访问，请重试或重新选择" : "";
-    const retrySkills = () => { void presetQuery.refetch(); skillQueries.forEach((query) => { void query.refetch(); }); };
+    const missingSkills = selectedSkills.filter((skill) => !installedSkills.some((item) => item.skillId === skill.skillId));
+    const selectionIssue = directorSelectionIssue(selection);
+    const skillsIssue = skillsLoading ? "正在确认编导技能，请稍后继续" : skillsError || selectionIssue || (missingSkills.length ? "请先加入本场景所需的全部技能" : undefined);
+    const retrySkills = () => { void presetQuery.refetch(); void addedQuery.refetch(); skillQueries.forEach((query) => { void query.refetch(); }); };
+    const refreshAddedSkills = () => addedQuery.refetch();
     const choosePreset = (presetId: string, sceneToolId?: string) => {
         const preset = presets.find((item) => item.presetId === presetId);
         setSelection(preset ? directorSelectionFromPreset(preset, sceneToolId) : { mode: "scene", skillIds: [], presetId, sceneToolId });
@@ -69,7 +80,40 @@ export function useWorkbenchDirector({ kind, prompt, references, seconds, userId
         choosePreset(presetId, toolId);
         return true;
     };
-    const selectGeneral = () => setSelection({ mode: "general", skillIds: [] });
+    const prepareEntry = (toolId?: string) => {
+        if (selection && !directorSelectionIssue(selection)) return;
+        if (toolId && chooseScene(toolId)) return;
+        choosePreset("seedance-video");
+    };
+
+    const installMissingSkills = async () => {
+        if (installAttemptRef.current || skillsLoading || skillsError || selectionIssue || !missingSkills.length) return;
+        const attempt = {};
+        const expectedSelection = JSON.stringify(selection);
+        const expectedContext = contextId;
+        const epoch = workbenchSessionEpoch(userId);
+        const isCurrent = () => installAttemptRef.current === attempt && identityRef.current.userId === userId && identityRef.current.contextId === expectedContext
+            && (useUserStore.getState().user?.id || "guest") === userId && workbenchSessionEpoch(userId) === epoch && JSON.stringify(selectionRef.current) === expectedSelection;
+        installAttemptRef.current = attempt;
+        setInstallingSkills(true);
+        try {
+            for (const skill of missingSkills) {
+                if (!isCurrent()) return;
+                await addSkill(skill.skillId);
+            }
+            if (isCurrent()) message.success("所需技能已加入，可继续进入 Agent");
+        } catch (error) {
+            if (isCurrent()) message.error(error instanceof Error ? error.message : "技能加入失败，请重试剩余技能");
+        } finally {
+            if (identityRef.current.userId === userId && workbenchSessionEpoch(userId) === epoch) await addedQuery.refetch();
+            if (installAttemptRef.current === attempt) { installAttemptRef.current = null; setInstallingSkills(false); }
+        }
+    };
+
+    useEffect(() => {
+        installAttemptRef.current = null;
+        setInstallingSkills(false);
+    }, [selection]);
 
     useEffect(() => {
         if (selection?.mode !== "scene" || selection.skillIds.length) return;
@@ -79,8 +123,10 @@ export function useWorkbenchDirector({ kind, prompt, references, seconds, userId
 
     useEffect(() => {
         submitAttemptRef.current = null;
+        installAttemptRef.current = null;
+        setInstallingSkills(false);
         setBusy(false);
-        return () => { submitAttemptRef.current = null; };
+        return () => { submitAttemptRef.current = null; installAttemptRef.current = null; };
     }, [contextId, userId]);
 
     const submit = useCallback(async () => {
@@ -94,9 +140,8 @@ export function useWorkbenchDirector({ kind, prompt, references, seconds, userId
         if (references.some((reference) => reference.error || !reference.resourceId)) return message.warning("请移除或重新上传不可用的编导素材");
         if (!ready.some((reference) => reference.kind === "image")) return message.warning("超级编导至少需要一张图片素材");
         if (ready.length > 8) return message.warning("超级编导最多使用 8 个焦点素材");
-        if (!selection) return message.warning("请选择编导场景或技能，也可以主动选择通用编导");
-        if (skillsLoading) return message.warning("正在确认编导技能，请稍后继续");
-        if (skillsError) return message.warning(skillsError);
+        if (skillsIssue) return message.warning(skillsIssue);
+        if (!selection || installingSkills) return;
         if (submitAttemptRef.current) return;
 
         setBusy(true);
@@ -134,9 +179,9 @@ export function useWorkbenchDirector({ kind, prompt, references, seconds, userId
                 retryHandoff();
             }
         }
-    }, [contextId, currentHandoff, handedOff, handoffCanvasId, kind, language, message, navigate, prompt, references, seconds, selection, selectedSkills, skillsError, skillsLoading, userId, workbenchRevisionRef]);
+    }, [contextId, currentHandoff, handedOff, handoffCanvasId, kind, language, message, navigate, prompt, references, seconds, selection, selectedSkills, skillsIssue, installingSkills, userId, workbenchRevisionRef]);
 
-    return { contextId, setContextId, language, setLanguage, busy, submit, selection, setSelection, chooseScene, choosePreset, selectGeneral, presets, presetsLoading: presetQuery.isPending, selectedSkills, skillsLoading, skillsError, retrySkills, skillPickerOpen, setSkillPickerOpen,
+    return { contextId, setContextId, language, setLanguage, busy, submit, selection, setSelection, chooseScene, choosePreset, prepareEntry, presets, presetsLoading: presetQuery.isPending, presetsError: presetQuery.isError, selectedSkills, installedSkills, missingSkills, installingSkills, installMissingSkills, refreshAddedSkills, skillsLoading, skillsError, skillsIssue, retrySkills, skillPickerOpen, setSkillPickerOpen,
         hasHandoff: Boolean(currentHandoff?.record), handedOff, handoffCanvasId, handoffLoading: kind === "video" && !currentHandoff, handoffError: currentHandoff?.error || "", continueHandoff,
-        handoffNeedsConfirmation: Boolean(currentHandoff?.record && !handedOff && !currentHandoff.record.skillSelection), retryHandoff };
+        handoffNeedsConfirmation: Boolean(currentHandoff?.record && !handedOff && directorSelectionIssue(currentHandoff.record.skillSelection)), retryHandoff };
 }

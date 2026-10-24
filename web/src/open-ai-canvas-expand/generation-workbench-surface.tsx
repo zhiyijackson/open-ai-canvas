@@ -124,6 +124,8 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
         userId,
         workbenchRevisionRef,
     });
+    const latestDirectorRef = useRef(director);
+    latestDirectorRef.current = director;
     const promptTools = useWorkbenchPromptTools({ enabled: controller.kind === "image", prompt: controller.prompt, userId });
     const promptReferences = useMemo(() => workbenchPromptReferences(controller.prompt, controller.references), [controller.prompt, controller.references]);
     const referenceLimit =
@@ -462,7 +464,14 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
             action();
         };
         if (!composerDirty) return apply();
-        modal.confirm({ title: "放弃当前修改？", content, okText: "放弃修改并继续", cancelText: "继续编辑", onOk: apply });
+        modal.confirm({
+            title: "放弃当前修改？",
+            content,
+            okText: "放弃修改并继续",
+            cancelText: "继续编辑",
+            onOk: apply,
+            focusable: { focusTriggerAfterClose: true },
+        });
     };
 
     const savePrompt = async () => {
@@ -516,6 +525,35 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
     const exampleVideo = example?.videoResourceId ? expandResourceFileURL(example.videoResourceId) : example?.videoUrl;
     const exampleURL = exampleVideo || exampleImage;
     const directorVideoReferences = controller.references.filter((reference) => reference.kind === "video").map((reference) => <div key={reference.id} className="text-xs"><span>视频素材 · {reference.uploading ? "上传中" : reference.error || reference.name}</span><Button size="small" onClick={() => controller.removeReference(reference)} aria-label={`移除编导视频 ${reference.name}`}>移除</Button></div>);
+    const directorCategory = "director-skills";
+    const directorSceneId = (id: string) => `director-preset:${id}`;
+    const sceneItems = controller.kind === "video" && ["all", directorCategory].includes(controller.toolCategory)
+        ? director.presets.filter((preset) => `${preset.name} ${preset.scene}`.toLowerCase().includes(controller.toolSearch.trim().toLowerCase())).map((preset) => ({
+            id: directorSceneId(preset.presetId), title: preset.name, description: preset.rationale,
+            capabilityLabel: `技能编导 · ${preset.skillIds.length} 项技能`, categoryId: directorCategory, thumbnail: <WandSparkles />,
+            disabled: !preset.skillIds.length, disabledReason: !preset.skillIds.length ? "此场景尚未配置技能" : undefined,
+        })) : [];
+    const changeDirectorSelection = (change: () => void) => {
+        const requiresOriginalSession = () => latestDirectorRef.current.hasHandoff && !latestDirectorRef.current.handoffNeedsConfirmation;
+        if (requiresOriginalSession()) {
+            message.info("请继续原 Agent 会话调整技能，或点击新建开始新的编导。");
+            return;
+        }
+        const apply = () => {
+            if (!mountedRef.current || requiresOriginalSession()) return;
+            workbenchRevisionRef.current += 1;
+            change();
+        };
+        if (!director.selection && !director.hasHandoff) return apply();
+        modal.confirm({
+            title: "更换编导技能？",
+            content: "当前技能将被替换，创作需求、素材和参数会保留。",
+            okText: "更换技能",
+            cancelText: "继续编辑",
+            onOk: apply,
+            focusable: { focusTriggerAfterClose: true },
+        });
+    };
 
     const surface = (
         <GenerationWorkbench
@@ -527,7 +565,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
             onModeChange={setMode}
             onMobileViewChange={(view) => controller.setMobileTab(view === "preview" ? "result" : view)}
             composer={{
-                title: controller.tool?.name || (controller.kind === "image" ? "图片创作" : "视频创作"),
+                title: mode === "director" ? (director.selection?.presetName || "技能编导") : controller.tool?.name || (controller.kind === "image" ? "图片创作" : "视频创作"),
                 presetLabel: controller.preset?.name,
                 prompt: controller.prompt,
                 promptPlaceholder: controller.tool?.inputHint || "描述你想生成的画面、镜头与细节",
@@ -571,19 +609,26 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
                 onAddReference: () => { controller.setUploadSlotKey(undefined); setAssetPickerOpen(true); },
                 onSavePrompt: () => void savePrompt(),
                 onOpenPromptLibrary: () => setPromptLibraryOpen(true),
-                onOpenDirector: () => setMode("director"),
+                onOpenDirector: () => { director.prepareEntry(controller.tool?.id); setMode("director"); },
             }}
             directory={{
-                activeItemId: controller.tool?.id,
-                categories: [{ id: "all", label: "全部" }, ...workbenchCategories.map((category) => ({ id: category.value, label: category.label }))],
+                activeItemId: mode === "director" && director.selection?.presetId ? directorSceneId(director.selection.presetId) : controller.tool?.id,
+                categories: [{ id: "all", label: "全部" }, ...(controller.kind === "video" ? [{ id: directorCategory, label: "技能编导" }] : []), ...workbenchCategories.map((category) => ({ id: category.value, label: category.label }))],
                 activeCategoryId: controller.toolCategory,
                 searchQuery: controller.toolSearch,
-                items: controller.filteredTools.map((tool) => ({ id: tool.id, title: tool.name, description: tool.subtitle || tool.description, categoryId: tool.categoryId, disabled: Boolean(tool.presets[0]?.requiredVariables?.length), disabledReason: tool.presets[0]?.requiredVariables?.length ? "该工具需要尚未接入的模板变量" : undefined, thumbnail: tool.iconUrl ? <img src={tool.iconUrl} alt="" /> : controller.kind === "image" ? <Images /> : <Video /> })),
-                loading: controller.directoryLoading,
-                error: controller.directoryError,
+                items: [...sceneItems, ...controller.filteredTools.map((tool) => ({ id: tool.id, title: tool.name, description: tool.subtitle || tool.description, capabilityLabel: controller.kind === "video" ? isDirectorScene(tool.id) ? "技能编导" : "普通视频" : undefined, categoryId: tool.categoryId, disabled: Boolean(tool.presets[0]?.requiredVariables?.length), disabledReason: tool.presets[0]?.requiredVariables?.length ? "该工具需要尚未接入的模板变量" : undefined, thumbnail: tool.iconUrl ? <img src={tool.iconUrl} alt="" /> : controller.kind === "image" ? <Images /> : <Video /> }))],
+                loading: controller.directoryLoading || (controller.kind === "video" && controller.toolCategory === directorCategory && director.presetsLoading),
+                error: controller.directoryError || (controller.kind === "video" && controller.toolCategory === directorCategory && director.presetsError ? "编导场景读取失败，请重试" : ""),
                 onCategoryChange: controller.setToolCategory,
                 onSearchQueryChange: controller.setToolSearch,
                 onSelectItem: (id) => {
+                    const scene = director.presets.find((preset) => directorSceneId(preset.presetId) === id);
+                    if (scene) {
+                        const apply = () => { director.choosePreset(scene.presetId); setMode("director"); setDirectoryOpen(false); };
+                        if (director.selection?.presetId === scene.presetId && mode === "director") setDirectoryOpen(false);
+                        else changeDirectorSelection(apply);
+                        return;
+                    }
                     if (id === controller.tool?.id) {
                         setDirectoryOpen(false);
                         if (controller.kind === "video" && isDirectorScene(id)) {
@@ -601,7 +646,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
                     setMode(controller.kind === "video" && director.chooseScene(id) ? "director" : "compose");
                     }, "切换工具会替换当前创作设置。");
                 },
-                onRetry: () => void controller.reloadTools(),
+                onRetry: () => { void controller.reloadTools(); director.retrySkills(); },
             }}
             preview={{
                 status: outputTask ? workbenchDeliveryState(outputTask, outputs).status : "empty",
@@ -674,6 +719,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
                         okText: "放弃修改并继续",
                         cancelText: "继续编辑",
                         onOk: openTask,
+                        focusable: { focusTriggerAfterClose: true },
                     });
                 },
                 onOpenHistory: () => navigate("/tasks"),
@@ -682,17 +728,18 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
             submit={{ label: controller.kind === "image" ? "立即生成图片" : "立即生成视频", disabled: controller.busy || Boolean(validationMessage) || !controller.selectedModel, pending: controller.busy, disabledReason: validationMessage, onSubmit: submitComposer }}
             director={controller.kind === "video" ? {
                 prompt: controller.prompt,
-                suggestions: ["口播带货", "品牌广告", "剧情短片"],
-                skillInput: <div className="space-y-2"><WorkbenchDirectorSkills director={director} theme={canvasTheme} userId={userId} />{director.handoffNeedsConfirmation ? <p className="text-xs text-muted-foreground">旧交接尚未确认技能，请重新选择场景或主动使用通用编导后继续。</p> : null}{director.handoffError ? <Button size="small" onClick={director.retryHandoff}>重新读取交接状态</Button> : null}</div>,
-                validationMessage: director.handoffError || director.skillsError || (!controller.references.some((reference) => reference.kind === "image" && reference.resourceId) ? "至少添加一张图片素材" : controller.references.length > 8 ? "编导最多使用 8 个焦点素材" : undefined),
+                suggestions: ["直击产品核心痛点", "利用新奇场景开场", "制造强烈情绪反转", "用反常识观点开场", "真实痛点引出需求", "强烈对比突出差异"],
+                skillInput: <div className="space-y-2"><WorkbenchDirectorSkills director={director} theme={canvasTheme} userId={userId} onSelectionChange={changeDirectorSelection} />{director.handoffNeedsConfirmation ? <p className="text-xs text-muted-foreground">旧交接尚未确认技能，请重新选择场景后继续。</p> : null}{director.handoffError ? <Button size="small" onClick={director.retryHandoff}>重新读取交接状态</Button> : null}</div>,
+                validationMessage: director.handoffError || director.skillsIssue || (!controller.references.some((reference) => reference.kind === "image" && reference.resourceId) ? "至少添加一张图片素材" : controller.references.length > 8 ? "编导最多使用 8 个焦点素材" : undefined),
                 submitLabel: director.busy ? "正在进入 Agent…" : "进入 Agent，分析素材与脚本",
-                submitDisabled: director.busy || director.handoffLoading || Boolean(director.handoffError) || director.skillsLoading || Boolean(director.skillsError) || !director.selection || !controller.prompt.trim() || !controller.references.some((reference) => reference.kind === "image" && reference.resourceId) || controller.references.length > 8 || controller.references.some((reference) => reference.uploading || reference.error || !reference.resourceId),
+                submitDisabled: director.busy || director.installingSkills || director.handoffLoading || Boolean(director.handoffError) || Boolean(director.skillsIssue) || !controller.prompt.trim() || !controller.references.some((reference) => reference.kind === "image" && reference.resourceId) || controller.references.length > 8 || controller.references.some((reference) => reference.uploading || reference.error || !reference.resourceId),
+                submitHint: "进入后由画布 Agent 使用所选技能分析；后续生成按原审批流程确认。",
                 languageInput: <Select aria-label="编导语言" value={director.language} onChange={(language) => { workbenchRevisionRef.current += 1; director.setLanguage(language); }} options={[{ value: "zh-CN", label: "中文" }, { value: "en-US", label: "English" }]} />,
                 imageInput: <div className="space-y-2"><div className="flex flex-wrap gap-2">{controller.references.filter((reference) => reference.kind === "image").map((reference) => <div key={reference.id} className="max-w-24 text-xs"><img src={reference.previewUrl} alt={reference.name} className="h-16 w-20 rounded object-cover" /><span>{reference.uploading ? "上传中" : reference.error || reference.name}</span><Button size="small" onClick={() => controller.removeReference(reference)} aria-label={`移除编导图片 ${reference.name}`}>移除</Button></div>)}</div><Button icon={<Upload className="size-4" />} onClick={() => directorImageInputRef.current?.click()}>上传图片</Button><input ref={directorImageInputRef} className="hidden" type="file" accept="image/*" onChange={(event) => { if (event.target.files) void addDirectorFiles(event.target.files, "image"); event.target.value = ""; }} /></div>,
                 audioInput: <div className="space-y-2">{directorVideoReferences}{controller.references.filter((reference) => reference.kind === "audio").map((reference) => <div key={reference.id} className="text-xs"><span>{reference.uploading ? "上传中" : reference.error || reference.name}</span><Button size="small" onClick={() => controller.removeReference(reference)} aria-label={`移除编导音频 ${reference.name}`}>移除</Button></div>)}<Button icon={<Upload className="size-4" />} onClick={() => directorAudioInputRef.current?.click()}>上传音频</Button><input ref={directorAudioInputRef} className="hidden" type="file" accept="audio/*" onChange={(event) => { if (event.target.files) void addDirectorFiles(event.target.files, "audio"); event.target.value = ""; }} /></div>,
                 durationInput: <Select aria-label="编导目标时长" value={controller.parameters.seconds || "6"} onChange={(seconds) => { workbenchRevisionRef.current += 1; controller.applyParameters({ seconds }); }} options={(profile.video?.duration.values || [6]).map((value) => ({ value: String(value), label: `${value} 秒` }))} />,
                 onPromptChange: changePrompt,
-                onSuggestionSelect: (suggestion) => replaceDraft(() => changePrompt(suggestion), "应用创作建议会替换当前需求，素材与设置会保留。"),
+                onSuggestionSelect: (suggestion) => { if (!controller.prompt.trim()) changePrompt(suggestion); else if (controller.prompt !== suggestion) replaceDraft(() => changePrompt(suggestion), "应用创作建议会替换当前需求，素材与设置会保留。"); },
                 onSubmit: () => void director.submit(),
                 onExit: () => setMode("compose"),
             } : undefined}

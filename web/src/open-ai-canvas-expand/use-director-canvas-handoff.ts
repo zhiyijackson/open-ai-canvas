@@ -97,6 +97,7 @@ export function useDirectorCanvasHandoff({
         let skillIds: readonly string[];
         try {
             skillIds = directorHandoffSkillIds(handoff);
+            if (!skillIds.length) throw new Error("视频编导需要真实技能，请返回视频工作台重新选择后继续");
         } catch (error) {
             reportError(error instanceof Error ? error.message : "编导技能尚未确认");
             return;
