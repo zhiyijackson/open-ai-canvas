@@ -9,7 +9,7 @@ Object.assign(globalThis, { window, document: window.document, navigator: window
 window.localStorage.setItem("yingce:active-user-scope", "user-a");
 let userId = "user-a";
 const events: string[] = [];
-const requests: Array<{ skillIds: string[]; prompt: string }> = [];
+const requests: Array<{ skillIds: string[]; prompt: string; canvasId?: string }> = [];
 let selectedCount = 0;
 const defer = <T,>() => {
     let resolve!: (value: T) => void;
@@ -21,6 +21,8 @@ const skill = (skillId: string) => ({ skillId, skillName: `Real ${skillId}`, isA
 let directory = defer<{ skills: ReturnType<typeof skill>[] }>();
 const noop = () => {};
 const empty = () => null;
+const conversationModule = await import("@/services/cloud-agent-conversations");
+const historyModule = await import("@/services/cloud-agent-history");
 
 mock.module("file-saver", () => ({ saveAs: noop }));
 mock.module("antd", () => ({ Button: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => <button onClick={onClick}>{children}</button> }));
@@ -42,13 +44,18 @@ mock.module("@/services/api/agent", () => ({
     getAgentProfile: async () => ({ revision: 1 }), getAgentCapabilities: async () => ({ skills: true, permissionModes: ["request_approval", "read_only", "auto"] }),
     createAgentRun: async (input: { skillIds: string[]; prompt: string }) => { events.push("POST"); requests.push(structuredClone(input)); return { run: { id: "mock-run", status: "completed" } }; },
     sendAgentMessage: async () => { throw new Error("Unexpected follow-up"); }, subscribeAgentEvents: () => noop,
-    cancelAgentRun: noop, getAgentRun: noop, decideAgentApproval: noop, sendAgentInterjection: noop, updateAgentProfile: noop,
+    cancelAgentRun: noop, getAgentRun: noop, decideAgentApproval: noop, sendAgentInterjection: noop, updateAgentProfile: noop, undoAgentCanvasRun: noop,
 }));
 mock.module("@/services/cloud-agent-conversations", () => ({
+    ...conversationModule,
     loadCloudAgentConversations: async () => ({ version: 1, activeId: "existing", conversations: [{ id: "existing", messages: [], run: null, permissionMode: "request_approval", skillIds: ["native-skill"], createdAt: "now", updatedAt: "now" }] }),
     loadCloudAgentPendingSubmission: async () => null,
-    saveCloudAgentPendingSubmission: async (_canvas: string, _conversation: string, pending: unknown) => { assert.ok(pending); events.push("pending-persisted"); },
+    saveCloudAgentPendingSubmission: async (_conversation: string, pending: unknown, scope: string) => { assert.ok(pending); assert.equal(scope, userId); events.push("pending-persisted"); },
     saveCloudAgentConversations: async () => { events.push("conversation-persisted"); }, clearCloudAgentPendingSubmission: async () => {}, cloudAgentConversationTitle: () => "test",
+}));
+mock.module("@/services/cloud-agent-history", () => ({
+    ...historyModule,
+    refreshCloudAgentConversations: async () => [], loadCloudAgentConversation: async () => { throw new Error("Unexpected cloud conversation load"); },
 }));
 mock.module("@/services/user-data-sync", () => ({ prepareCanvasForCloudAction: async () => {}, applyAgentCanvasPatches: noop, refreshCanvasAfterAgent: noop }));
 mock.module("@/services/agent-canvas-sync", () => ({ createAgentCanvasSync: () => ({ dispose: noop, receive: noop, reconcile: noop }) }));
@@ -67,12 +74,14 @@ mock.module("@/components/canvas/canvas-cloud-agent-chat-ui", () => ({
 
 // Keep the original panel, its hooks, submit controller and pending-request construction under test.
 const { CanvasCloudAgentPanel } = await import("../../src/components/canvas/canvas-cloud-agent-panel");
+const { useGlobalAgentStore } = await import("../../src/stores/use-global-agent-store");
 const settle = async () => { await act(async () => { await new Promise((done) => setTimeout(done, 5)); }); };
 const mount = async (canvasId: string, prefill: { id: number; text: string; autoSubmit: boolean; skillIds?: string[] }, persisted: () => Promise<void> | void = noop) => {
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
-    const render = () => <CanvasCloudAgentPanel canvasId={canvasId} nodeCount={1} selectedNodeIds={["focus-node"]} references={[]} open prefillRequest={prefill} onPrefillPendingPersisted={persisted} onOpen={noop} onCollapse={noop} />;
+    useGlobalAgentStore.setState({ open: true, canvas: { canvasId, nodeCount: 1, selectedNodeIds: ["focus-node"], references: [], prefillRequest: prefill, onPrefillPendingPersisted: persisted } });
+    const render = () => <CanvasCloudAgentPanel />;
     await act(async () => { root.render(render()); });
     await settle();
     return { root, container, rerender: async () => { await act(async () => { root.render(render()); }); await settle(); }, close: async () => { await act(async () => root.unmount()); container.remove(); } };
@@ -164,6 +173,18 @@ try {
     await settle();
     assert.deepEqual(requests[4]?.skillIds, ["skill-a"]);
     await failed.close();
+
+    directory = defer();
+    const route = await mount("route-a", { id: 1, text: "Abandoned canvas", autoSubmit: true, skillIds: ["skill-a"] });
+    await act(async () => useGlobalAgentStore.getState().setCanvas(null));
+    await act(async () => useGlobalAgentStore.getState().setCanvas({ canvasId: "route-b", nodeCount: 1, selectedNodeIds: ["focus-b"], references: [], prefillRequest: { id: 1, text: "Next canvas", autoSubmit: true, skillIds: ["skill-b"] } }));
+    await act(async () => directory.resolve({ skills: [skill("skill-a"), skill("skill-b")] }));
+    await settle();
+    assert.equal(requests.length, 6, "persistent global panel must accept the next canvas's first prefill exactly once");
+    assert.equal(requests[5]?.canvasId, "route-b");
+    assert.equal(requests[5]?.prompt, "Next canvas");
+    assert.deepEqual(requests[5]?.skillIds, ["skill-b"]);
+    await route.close();
     console.log("native-agent-skill-prefill: passed");
 } finally {
     await window.happyDOM.close();

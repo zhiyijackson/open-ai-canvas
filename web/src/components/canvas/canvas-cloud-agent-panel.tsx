@@ -134,7 +134,7 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
     const [messages, setMessages] = useState<CloudAgentChatMessage[]>([]);
     const [prompt, setPrompt] = useState("");
     const [restoredModel, setRestoredModel] = useState<string | null>(null);
-    const lastPrefillIdRef = useRef(0);
+    const lastPrefillRef = useRef<{ canvasId: string; id: number } | null>(null);
     const [pendingAutoSubmit, setPendingAutoSubmit] = useState<AgentPrefillRequest | null>(null);
     const prefilledSubmissionRef = useRef<AgentPrefillRequest | null>(null);
     const [reasoningMode, setReasoningMode] = useState<AgentReasoningMode>("off");
@@ -417,8 +417,9 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
     }, [historyHydrated, prefillSkillsError, skillPrefill, skillScope, skills, skillsReadyForScope]);
 
     useEffect(() => {
-        if (!prefillRequest || prefillRequest.id === lastPrefillIdRef.current) return;
-        lastPrefillIdRef.current = prefillRequest.id;
+        if (!prefillRequest) { lastPrefillRef.current = null; return; }
+        if (prefillRequest.id === lastPrefillRef.current?.id && canvasId === lastPrefillRef.current.canvasId) return;
+        lastPrefillRef.current = { canvasId, id: prefillRequest.id };
         if (!prefillRequest.text.trim()) return;
         setPrompt((current) => appendAgentPromptPrefill(current, prefillRequest.displayText || prefillRequest.text));
         const frozen = { ...prefillRequest, ...(prefillRequest.skillIds !== undefined ? { skillIds: Object.freeze([...prefillRequest.skillIds]) } : {}) };
@@ -427,7 +428,7 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
         setSkillPrefill(frozen.skillIds !== undefined ? frozen : null);
         setPendingAutoSubmit(prefillRequest.autoSubmit ? frozen : null);
         setView("chat");
-    }, [prefillRequest]);
+    }, [prefillRequest, canvasId]);
 
     useEffect(() => {
         if (!open || view !== "chat") setSkillsOpen(false);
@@ -1025,7 +1026,6 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
                 setRun(result.run);
                 setConversations((current) => current.map((item) => item.id === activeConversationId ? { ...item, serverConversationId: result.run.conversationId, run: result.run, lastEventSeq: 0 } : item));
             }
-            if (!isCurrentSubmission()) return;
             await waitForCanvasSync(clearCloudAgentPendingSubmission(activeConversationId, accountScope));
             if (isCurrentSubmission()) pendingSubmission.current = null;
         } catch (cause) {
@@ -1069,7 +1069,7 @@ export const CanvasCloudAgentPanel = memo(function CanvasCloudAgentPanel() {
             setMessages((current) => appendAgentError(current, `submit-error-${activeConversationId}`, cause, agentSubmissionErrorTitle(cause, accepted, requestSent)));
         } finally {
             submissionRequestRef.current = false;
-            if (isCurrentSubmission()) setBusy(false);
+            if (accountIsCurrent() && currentScope.current === scope) setBusy(false);
         }
     };
 
