@@ -7,14 +7,21 @@ import {
     directorAgentPrompt,
     directorHandoffNodeIds,
     markDirectorHandoffPrepared,
-    startOrResumeDirectorHandoff,
+    startOrResumeDirectorHandoff as startHandoff,
     uninsertedDirectorHandoffPayloads,
     type StoredDirectorHandoff,
+    type StartDirectorHandoffInput,
 } from "../../src/open-ai-canvas-expand/director-canvas-handoff";
 import { apiClient } from "../../src/services/api/request";
 import { useCanvasStore } from "../../src/stores/canvas/use-canvas-store";
 import * as canvasStoreModule from "../../src/stores/canvas/use-canvas-store";
 import { useAssetStore } from "../../src/stores/use-asset-store";
+
+const startOrResumeDirectorHandoff = (input: StartDirectorHandoffInput) => startHandoff({
+    skillSelection: { mode: "custom", skillIds: ["director-skill"] },
+    skillSnapshots: [{ skillId: "director-skill", skillName: "视频导演", versionId: "v1", version: "1" }],
+    ...input,
+});
 
 const record: StoredDirectorHandoff = {
     version: 1,

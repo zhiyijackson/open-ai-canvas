@@ -6,7 +6,7 @@ import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use
 import { createCanvasProjectWithRemoteSync, loadAssetsForUse, loadCanvasProjectForEditing } from "@/services/user-data-sync";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { expandResourceFileURL, getExpandResource } from "./generation-api";
-import { normalizeDirectorSelection, type DirectorSkillSelection, type DirectorSkillSnapshot } from "./director-skills";
+import { directorSelectionIssue, normalizeDirectorSelection, type DirectorSkillSelection, type DirectorSkillSnapshot } from "./director-skills";
 
 const STORAGE_PREFIX = "director-canvas-handoff-v1";
 const STORAGE_INDEX_KEY = `${STORAGE_PREFIX}:contexts`;
@@ -115,7 +115,9 @@ function normalizeInput(input: StartDirectorHandoffInput) {
     if (!assetIds.length && ![...resourceById.values()].some((item) => item.kind === "image")) throw new Error("超级编导至少需要一张参考图片");
     const durationSeconds = input.durationSeconds;
     if (durationSeconds !== undefined && (!Number.isFinite(durationSeconds) || durationSeconds <= 0)) throw new Error("目标时长必须大于 0 秒");
-    const skillSelection = input.skillSelection ? normalizeDirectorSelection(input.skillSelection) : undefined;
+    const selectionIssue = directorSelectionIssue(input.skillSelection);
+    if (selectionIssue) throw new Error(selectionIssue);
+    const skillSelection = normalizeDirectorSelection(input.skillSelection!);
     const skillSnapshots = input.skillSnapshots?.map((skill) => ({ ...skill }));
     const skillIds = skillSelection?.skillIds.slice();
     if (skillSelection) directorHandoffSkillIds({ skillSelection, skillSnapshots, skillIds });

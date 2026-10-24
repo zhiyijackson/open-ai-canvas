@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { cloudAgentPrefillSkillIds } from "../../src/components/canvas/canvas-cloud-agent-panel";
-import { directorPresetForTool, directorSelectionFromPreset, isDirectorScene, normalizeDirectorSelection, snapshotDirectorSkills, videoDirectorPresets } from "../../src/open-ai-canvas-expand/director-skills";
+import { directorPresetForTool, directorSelectionFromPreset, directorSelectionIssue, isDirectorScene, normalizeDirectorSelection, snapshotDirectorSkills, videoDirectorPresets } from "../../src/open-ai-canvas-expand/director-skills";
 import { clearWorkbenchDraftsForScope, readWorkbenchDraft, sameWorkbenchComposerDraft, writeWorkbenchDraft, type WorkbenchSessionDraft } from "../../src/open-ai-canvas-expand/workbench-session";
 import type { Skill, SkillPreset } from "../../src/services/api/skills";
 
@@ -34,7 +34,11 @@ describe("director real skill identity", () => {
         expect(videoDirectorPresets(presets).map((preset) => preset.presetId)).not.toContain("ecom-image");
     });
 
-    test("requires explicit general intent and freezes names from real skill detail", () => {
+    test("reads historical general intent but blocks it and empty custom selections for new director runs", () => {
+        expect(directorSelectionIssue(null)).toContain("选择编导场景");
+        expect(directorSelectionIssue({ mode: "general", skillIds: [] })).toContain("至少需要一项真实技能");
+        expect(directorSelectionIssue({ mode: "custom", skillIds: [] })).toContain("至少需要一项真实技能");
+        expect(directorSelectionIssue({ mode: "custom", skillIds: ["real-id"] })).toBeUndefined();
         expect(() => normalizeDirectorSelection({ mode: "scene", presetId: "missing", skillIds: [] })).toThrow("场景技能尚未确认");
         expect(() => normalizeDirectorSelection({ mode: "general", skillIds: ["real-id"] })).toThrow("通用编导不能包含");
         expect(normalizeDirectorSelection({ mode: "general", skillIds: [] })).toEqual({ mode: "general", skillIds: [] });

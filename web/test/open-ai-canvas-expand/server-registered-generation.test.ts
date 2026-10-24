@@ -27,4 +27,13 @@ describe("expand generation HTTP boundary", () => {
         expect(apiSource).toContain("client.uploadResource");
         expect(apiSource).toContain("EXPAND_OPENAPI_PREFIX");
     });
+
+    test("workbench confirmations restore focus through the current Ant Design API", () => {
+        const confirmations = [...surfaceSource.matchAll(/modal\.confirm\(\{([\s\S]*?)\}\);/g)].map((match) => match[1]);
+        expect(confirmations).toHaveLength(3);
+        for (const confirmation of confirmations) {
+            expect(confirmation).toContain("focusable: { focusTriggerAfterClose: true }");
+            expect(confirmation).not.toContain("focusTriggerAfterClose: true,\n");
+        }
+    });
 });
