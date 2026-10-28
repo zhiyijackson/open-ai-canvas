@@ -1,12 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
+ARG DOCKER_REGISTRY=docker.io
+
 # 构建 Vite 前端产物。
-FROM --platform=$BUILDPLATFORM oven/bun:1.3.9 AS web-build
+FROM --platform=$BUILDPLATFORM ${DOCKER_REGISTRY}/oven/bun:1.3.9 AS web-build
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 WORKDIR /app/web
 COPY web/package.json web/bun.lock ./
 COPY web/src/open-ai-canvas-expand/vendor ./src/open-ai-canvas-expand/vendor
-RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lockfile --cache-dir=/root/.bun/install/cache
+RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lockfile --registry="$NPM_REGISTRY" --cache-dir=/root/.bun/install/cache
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY README.md /app/README.md
@@ -24,7 +28,7 @@ ENV CANVAS_BUILD_TIME=${BUILD_TIME}
 RUN bun --bun ./node_modules/vite/bin/vite.js build
 
 # 运行镜像：nginx 托管静态前端，并在 Compose 中把 /api 转发到后端服务。
-FROM nginx:1.27-alpine
+FROM ${DOCKER_REGISTRY}/library/nginx:1.27-alpine
 
 COPY --from=web-build /app/web/dist /opt/canvas-release
 COPY docker/canvas-web-entrypoint.sh /usr/local/bin/canvas-web-entrypoint

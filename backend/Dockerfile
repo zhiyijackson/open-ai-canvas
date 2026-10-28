@@ -1,11 +1,18 @@
 # syntax=docker/dockerfile:1.7
 
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS payment-package-build
+ARG DOCKER_REGISTRY=docker.io
+ARG GOPROXY=https://goproxy.cn,direct
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG ALPINE_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/alpine
 
-ARG GOPROXY=https://proxy.golang.org,direct
+FROM --platform=$BUILDPLATFORM ${DOCKER_REGISTRY}/library/golang:1.25-alpine AS payment-package-build
+
+ARG GOPROXY
+ARG ALPINE_MIRROR
 ENV GOPROXY=$GOPROXY
 
-RUN apk add --no-cache nodejs unzip zip
+RUN sed -i "s|https\?://dl-cdn[.]alpinelinux[.]org/alpine|${ALPINE_MIRROR%/}|g" /etc/apk/repositories \
+    && apk add --no-cache nodejs unzip zip
 
 WORKDIR /src
 # 插件只下载实际依赖，不为四个小程序预取整个业务后端的模块图。
@@ -13,7 +20,7 @@ COPY backend ./backend
 COPY plugin-packages ./plugin-packages
 ARG TARGETOS
 ARG TARGETARCH
-RUN --mount=type=cache,target=/root/.cache/go-build set -eu; \
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod set -eu; \
     test -n "$TARGETOS"; \
     test -n "$TARGETARCH"; \
     PAYMENT_PLUGIN_GOOS="$TARGETOS" \
@@ -22,21 +29,25 @@ RUN --mount=type=cache,target=/root/.cache/go-build set -eu; \
       ./plugin-packages/build-packages.sh --payments-only; \
     sh ./plugin-packages/verify-payment-packages.sh "$TARGETOS" "$TARGETARCH"
 
-FROM alpine:3.22 AS payment-package-smoke
+FROM ${DOCKER_REGISTRY}/library/alpine:3.22 AS payment-package-smoke
 
 ARG TARGETOS
 ARG TARGETARCH
-RUN apk add --no-cache unzip
+ARG ALPINE_MIRROR
+RUN sed -i "s|https\?://dl-cdn[.]alpinelinux[.]org/alpine|${ALPINE_MIRROR%/}|g" /etc/apk/repositories \
+    && apk add --no-cache unzip
 COPY --from=payment-package-build /src/plugin-packages /app/plugin-packages
 RUN PAYMENT_PLUGIN_SMOKE_TEST=1 \
     sh /app/plugin-packages/verify-payment-packages.sh "$TARGETOS" "$TARGETARCH"
 
-FROM golang:1.25-alpine AS backend-build
+FROM ${DOCKER_REGISTRY}/library/golang:1.25-alpine AS backend-build
 
-ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOPROXY
+ARG ALPINE_MIRROR
 ENV GOPROXY=$GOPROXY
 
-RUN apk add --no-cache build-base
+RUN sed -i "s|https\?://dl-cdn[.]alpinelinux[.]org/alpine|${ALPINE_MIRROR%/}|g" /etc/apk/repositories \
+    && apk add --no-cache build-base
 
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
@@ -59,16 +70,21 @@ RUN --mount=type=cache,target=/root/.cache/go-build set -eu; \
     CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="$ldflags" -o /out/migrate-schema ./cmd/migrate-schema; \
     CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="$ldflags" -o /out/migrate-sqlite-postgres ./cmd/migrate-sqlite-postgres
 
-FROM node:22.19-alpine AS pi-runtime-deps
+FROM ${DOCKER_REGISTRY}/library/node:22.19-alpine AS pi-runtime-deps
+
+ARG NPM_REGISTRY
 
 WORKDIR /app/backend/agent-runtime/pi
 COPY backend/agent-runtime/pi/package.json backend/agent-runtime/pi/package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts
+RUN --mount=type=cache,id=canvas-npm,target=/root/.npm,sharing=locked \
+    npm ci --omit=dev --ignore-scripts --registry="$NPM_REGISTRY" --no-audit --no-fund
 
-FROM node:22.19-alpine
+FROM ${DOCKER_REGISTRY}/library/node:22.19-alpine
 
+ARG ALPINE_MIRROR
 # ffmpeg/ffprobe：短剧抽取剧情段视频最后一帧、时间线合成成片与视频播放转码。
-RUN apk add --no-cache ca-certificates tzdata wget ffmpeg \
+RUN sed -i "s|https\?://dl-cdn[.]alpinelinux[.]org/alpine|${ALPINE_MIRROR%/}|g" /etc/apk/repositories \
+    && apk add --no-cache ca-certificates tzdata wget ffmpeg \
     && addgroup -S app \
     && adduser -S app -G app
 

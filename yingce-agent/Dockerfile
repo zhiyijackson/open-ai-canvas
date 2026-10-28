@@ -1,14 +1,20 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22.19-alpine
+ARG DOCKER_REGISTRY=docker.io
+FROM ${DOCKER_REGISTRY}/library/node:22.19-alpine
 
-RUN apk add --no-cache ca-certificates wget \
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG ALPINE_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/alpine
+
+RUN sed -i "s|https\?://dl-cdn[.]alpinelinux[.]org/alpine|${ALPINE_MIRROR%/}|g" /etc/apk/repositories \
+    && apk add --no-cache ca-certificates wget \
     && addgroup -S app \
     && adduser -S app -G app
 
 WORKDIR /app
 COPY backend/agent-runtime/pi/package.json backend/agent-runtime/pi/package-lock.json /app/agent-runtime/
-RUN npm ci --omit=dev --ignore-scripts --prefix /app/agent-runtime
+RUN --mount=type=cache,id=canvas-npm,target=/root/.npm,sharing=locked \
+    npm ci --omit=dev --ignore-scripts --prefix /app/agent-runtime --registry="$NPM_REGISTRY" --no-audit --no-fund
 COPY backend/agent-runtime/pi/agent-runtime.mjs /app/agent-runtime/agent-runtime.mjs
 COPY yingce-agent/server.mjs /app/server.mjs
 
