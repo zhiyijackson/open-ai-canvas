@@ -25,7 +25,8 @@ const conversationModule = await import("@/services/cloud-agent-conversations");
 const historyModule = await import("@/services/cloud-agent-history");
 
 mock.module("file-saver", () => ({ saveAs: noop }));
-mock.module("antd", () => ({ Button: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => <button onClick={onClick}>{children}</button> }));
+const appMessage = { warning: (value: string) => events.push(value) };
+mock.module("antd", () => ({ App: { useApp: () => ({ message: appMessage }) }, Button: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => <button onClick={onClick}>{children}</button> }));
 mock.module("motion/react", () => ({ AnimatePresence: ({ children }: { children: ReactNode }) => children, useReducedMotion: () => true, motion: { aside: ({ children }: { children: ReactNode }) => <aside>{children}</aside>, div: ({ children }: { children: ReactNode }) => <div>{children}</div> } }));
 mock.module("@/stores/use-user-store", () => ({ useUserStore: Object.assign((select: (value: unknown) => unknown) => select({ user: { id: userId } }), { getState: () => ({ user: { id: userId } }) }) }));
 mock.module("@/stores/canvas/use-canvas-theme-store", () => ({ useActiveTheme: () => "dark" }));
@@ -44,7 +45,7 @@ mock.module("@/services/api/agent", () => ({
     getAgentProfile: async () => ({ revision: 1 }), getAgentCapabilities: async () => ({ skills: true, permissionModes: ["request_approval", "read_only", "auto"] }),
     createAgentRun: async (input: { skillIds: string[]; prompt: string }) => { events.push("POST"); requests.push(structuredClone(input)); return { run: { id: "mock-run", status: "completed" } }; },
     sendAgentMessage: async () => { throw new Error("Unexpected follow-up"); }, subscribeAgentEvents: () => noop,
-    cancelAgentRun: noop, getAgentRun: noop, decideAgentApproval: noop, sendAgentInterjection: noop, updateAgentProfile: noop, undoAgentCanvasRun: noop,
+    cancelAgentRun: noop, getAgentRun: noop, decideAgentApproval: noop, sendAgentInterjection: noop, withdrawAgentInterjection: noop, updateAgentProfile: noop, undoAgentCanvasRun: noop,
 }));
 mock.module("@/services/cloud-agent-conversations", () => ({
     ...conversationModule,
@@ -185,6 +186,24 @@ try {
     assert.equal(requests[5]?.prompt, "Next canvas");
     assert.deepEqual(requests[5]?.skillIds, ["skill-b"]);
     await route.close();
+
+    directory = defer();
+    const removed = await mount("removed-skill", { id: 1, text: "Keep native draft", autoSubmit: false });
+    assert.equal(selectedCount, 1, "a loading catalog must preserve the saved native selection");
+    await act(async () => directory.reject(new Error("catalog offline")));
+    await settle();
+    assert.equal(selectedCount, 1, "a failed catalog must not erase the saved native selection");
+    directory = defer();
+    await act(async () => window.dispatchEvent(new window.Event("canvas-skills-changed")));
+    await act(async () => directory.resolve({ skills: [] }));
+    await settle();
+    assert.equal(selectedCount, 0, "a loaded catalog removes deleted native skills");
+    assert.ok(events.some((event) => event.includes("已失效的技能")));
+    await act(async () => useGlobalAgentStore.getState().setCanvas({ canvasId: "removed-skill", nodeCount: 1, selectedNodeIds: [], references: [], prefillRequest: { id: 2, text: "Send after deletion", autoSubmit: true } }));
+    await settle();
+    assert.equal(requests.length, 7);
+    assert.deepEqual(requests[6]?.skillIds, [], "normal sends exclude deleted skills without weakening director validation");
+    await removed.close();
     console.log("native-agent-skill-prefill: passed");
 } finally {
     await window.happyDOM.close();

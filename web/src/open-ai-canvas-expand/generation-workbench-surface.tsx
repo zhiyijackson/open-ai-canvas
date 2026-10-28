@@ -166,7 +166,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
             : promptTools.issue
             ? promptTools.issue
             : requiresMaskRedraw
-            ? "该历史任务是局部编辑，请重新涂抹选区后提交"
+            ? "该历史任务是局部编辑，请重新框选区域后提交"
             : historicalParameterIssue
               ? historicalParameterIssue
             : controller.references.some((reference) => reference.uploading)
@@ -672,7 +672,7 @@ export function GenerationWorkbenchSurface({ controller }: { controller: Workben
                         anchor.rel = "noopener noreferrer";
                         anchor.click();
                     } }] : []),
-                    ...(controller.kind === "image" && maskSourceResourceId && (requiresMaskRedraw || activeOutput?.status === "ready") && profile.image?.references.maskSupported ? [{ id: "mask", label: requiresMaskRedraw ? "重新涂抹选区" : "局部编辑", icon: <WandSparkles className="size-4" />, onSelect: () => setMaskOpen(true) }] : []),
+                    ...(controller.kind === "image" && maskSourceResourceId && (requiresMaskRedraw || activeOutput?.status === "ready") && profile.image?.references.maskSupported ? [{ id: "mask", label: requiresMaskRedraw ? "重新框选区域" : "局部编辑", icon: <WandSparkles className="size-4" />, onSelect: () => setMaskOpen(true) }] : []),
                     ...(outputTask?.canRecoverMedia ? [{ id: "recover", label: "重试保存", icon: <RefreshCw className="size-4" />, disabled: controller.taskBusyId === outputTask.id, onSelect: () => void controller.recoverTaskMedia(outputTask) }] : []),
                     ...(outputTask && (outputTask.status === "queued" || outputTask.status === "running") ? [{ id: "cancel", label: "取消任务", icon: <Square className="size-4" />, disabled: controller.taskBusyId === outputTask.id, onSelect: () => void controller.cancelTask(outputTask) }] : []),
                     ...(outputTask && !outputTask.canRecoverMedia && (outputTask.status === "failed" || outputTask.status === "cancelled") ? [{ id: "retry", label: "重新生成", icon: <RefreshCw className="size-4" />, disabled: controller.taskBusyId === outputTask.id, onSelect: () => replaceDraft(() => { void controller.retryTask(outputTask, applyRestoredMetadata); }, "重试任务会恢复原任务配置并覆盖当前修改。") }] : []),

@@ -185,6 +185,40 @@ test("native preset seam applies empty input immediately and preserves replace/a
     expect(fake.submissions()).toBe(0);
 });
 
+test("switching tools replaces an untouched preset and clears it for a tool without presets", async () => {
+    const nextTool = { ...tool, id: "tool-next", presets: [secondPreset] };
+    const plainTool = { ...tool, id: "tool-plain", presets: [] };
+    const fake = createRuntime({ listTools: async () => ({ tools: [tool, nextTool, plainTool] }) });
+    const view = await mountWorkbench(fake.runtime);
+    await view.operate((controller) => controller.chooseTool(tool));
+    expect(view.value("当前正文")).toBe(firstPreset.promptTemplate);
+    await view.operate((controller) => controller.chooseTool(nextTool));
+    expect(view.value("当前正文")).toBe(secondPreset.promptTemplate);
+    expect(view.value("待应用模板")).toBe("none");
+    await view.operate((controller) => controller.chooseTool(plainTool));
+    expect(view.value("当前正文")).toBe("");
+    expect(view.value("已应用模板")).toBe("none");
+    expect(fake.submissions()).toBe(0);
+});
+
+test("switching tools retains edited text until the user cancels or confirms the new preset", async () => {
+    const nextTool = { ...tool, id: "tool-next", presets: [secondPreset] };
+    const fake = createRuntime({ listTools: async () => ({ tools: [tool, nextTool] }) });
+    const view = await mountWorkbench(fake.runtime);
+    await view.operate((controller) => controller.chooseTool(tool));
+    await view.click("填写正文");
+    await view.operate((controller) => controller.chooseTool(nextTool));
+    expect(view.value("当前正文")).toBe("已有正文  ");
+    expect(view.value("待应用模板")).toBe(secondPreset.id);
+    await view.click("取消应用");
+    expect(view.value("当前正文")).toBe("已有正文  ");
+    expect(view.value("待应用模板")).toBe("none");
+    await view.click("选择场景模板");
+    await view.click("追加正文");
+    expect(view.value("当前正文")).toBe(`已有正文\n${secondPreset.promptTemplate}`);
+    expect(fake.submissions()).toBe(0);
+});
+
 test("applying a preset to empty text invalidates a pending historical detail response", async () => {
     const detail = deferred<GenerationTask>();
     const fake = createRuntime({ getTask: () => detail.promise });

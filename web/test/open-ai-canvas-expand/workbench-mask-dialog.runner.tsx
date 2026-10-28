@@ -2,8 +2,9 @@ import { mock } from "bun:test";
 import assert from "node:assert/strict";
 import { Window } from "happy-dom";
 import type { ReactNode } from "react";
-import type { CanvasImageMaskEditPayload } from "../../src/components/canvas/canvas-node-mask-edit-dialog";
-import type { MaskStroke } from "../../src/lib/canvas/image-mask-document";
+import type { CanvasImageRegionEditPayload } from "../../src/components/canvas/canvas-node-region-edit-dialog";
+import * as regionModule from "../../src/lib/canvas/image-region-edit";
+import type { ImageEditRegion } from "../../src/lib/canvas/image-region-edit";
 
 const window = new Window({ url: "http://localhost/" });
 const frames = new Map<number, FrameRequestCallback>();
@@ -11,6 +12,7 @@ let nextFrame = 0;
 Object.assign(globalThis, {
     window, document: window.document, navigator: window.navigator,
     HTMLElement: window.HTMLElement, Element: window.Element, Node: window.Node,
+    HTMLTextAreaElement: window.HTMLTextAreaElement,
     SVGElement: window.SVGElement, ShadowRoot: window.ShadowRoot,
     ResizeObserver: window.ResizeObserver,
     getComputedStyle: window.getComputedStyle.bind(window),
@@ -26,44 +28,52 @@ type ModalProps = {
     onCancel(): void; onOk(): void;
 };
 let modalProps: ModalProps;
-const exports: MaskStroke[][] = [];
-const paints: MaskStroke[][] = [];
-const copyStrokes = (strokes: readonly MaskStroke[]) => strokes.map((stroke) => ({ ...stroke, points: stroke.points.map((point) => [...point] as const) }));
+const exports: ImageEditRegion[][] = [];
 mock.module("@/components/ui/product/app-modal", () => ({
     AppModal: (props: ModalProps) => {
         modalProps = props;
         return <section role="dialog" aria-label={props.title}>
             {props.children}
-            <button type="button" aria-label="关闭局部编辑" disabled={props.cancelButtonProps?.disabled} onClick={props.onCancel}>关闭</button>
-            <button type="button" disabled={props.okButtonProps?.disabled} onClick={props.onOk}>AI 修改</button>
         </section>;
     },
 }));
-mock.module("@/components/canvas/use-image-tool-source", () => ({
-    useImageToolSource: () => ({ size: { width: 128, height: 64 }, error: "" }),
+mock.module("@/services/image-storage", () => ({
+    imageToDataUrl: async () => "data:image/png;base64,c291cmNl",
 }));
-mock.module("@/lib/canvas/image-mask-document", () => ({
-    paintMaskStrokes: (_canvas: HTMLCanvasElement, strokes: readonly MaskStroke[]) => { paints.push(copyStrokes(strokes)); },
-    exportEditMask: (_width: number, _height: number, strokes: readonly MaskStroke[]) => {
-        const snapshot = copyStrokes(strokes);
+mock.module("@/lib/image-raster", () => ({
+    loadRasterImage: async () => ({ naturalWidth: 128, naturalHeight: 64 }),
+}));
+mock.module("@/lib/canvas/image-region-edit", () => ({
+    ...regionModule,
+    renderRegionThumbnail: () => "",
+    renderRegionAnnotatedImage: () => "data:image/jpeg;base64,YW5ub3RhdGlvbg==",
+    exportRegionMask: (_size: unknown, regions: readonly ImageEditRegion[]) => {
+        const snapshot = structuredClone(regions);
         exports.push(snapshot);
-        if (!snapshot.length) throw new Error("请先涂抹需要修改的区域");
+        if (!snapshot.length) throw new Error("请先框选需要修改的区域");
         return `data:image/png;base64,${Buffer.from(JSON.stringify(snapshot)).toString("base64")}`;
     },
 }));
 mock.module("@/components/model-picker", () => ({
     ModelPicker: ({ value }: { value: string }) => <output aria-label="当前重绘模型">{value}</output>,
 }));
-mock.module("@/components/image-settings-panel", () => ({
-    ImageSettingsPanel: ({ config, onConfigChange }: { config: { quality: string }; onConfigChange(key: string, value: string): void }) => <button type="button" onClick={() => onConfigChange("quality", "high")}>画质：{config.quality}</button>,
+mock.module("@/components/canvas/canvas-image-settings-popover", () => ({
+    CanvasImageSettingsPopover: ({ config, onConfigChange }: { config: { quality: string }; onConfigChange(key: string, value: string): void }) => <button type="button" onClick={() => onConfigChange("quality", "high")}>画质：{config.quality}</button>,
+}));
+let submitFromEditor: () => void;
+mock.module("@/components/canvas/canvas-resource-mention-textarea", () => ({
+    CanvasResourceMentionTextarea: ({ value, onChange, onSubmit }: { value: string; onChange(value: string): void; onSubmit(): void }) => {
+        submitFromEditor = onSubmit;
+        return <textarea value={value} onChange={(event) => onChange(event.target.value)} />;
+    },
 }));
 
 const { act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { App } = await import("antd");
-const { CanvasNodeMaskEditDialog } = await import("../../src/components/canvas/canvas-node-mask-edit-dialog");
+const { CanvasNodeRegionEditDialog } = await import("../../src/components/canvas/canvas-node-region-edit-dialog");
 const { defaultConfig } = await import("../../src/stores/use-config-store");
-type DialogProps = Parameters<typeof CanvasNodeMaskEditDialog>[0];
+type DialogProps = Parameters<typeof CanvasNodeRegionEditDialog>[0];
 
 async function click(element: HTMLElement | null | undefined) {
     assert.ok(element);
@@ -72,23 +82,22 @@ async function click(element: HTMLElement | null | undefined) {
 
 async function mount(overrides: Partial<DialogProps> = {}) {
     exports.length = 0;
-    paints.length = 0;
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
-    const confirmations: CanvasImageMaskEditPayload[] = [];
+    const confirmations: CanvasImageRegionEditPayload[] = [];
     let closes = 0;
     let props: DialogProps = {
-        open: true, dataUrl: "data:image/png;base64,c291cmNl", config: { ...defaultConfig, model: "native-mask-model", imageModel: "native-mask-model", quality: "standard" },
+        open: true, image: { url: "data:image/png;base64,c291cmNl" }, config: { ...defaultConfig, model: "native-mask-model", imageModel: "native-mask-model", quality: "standard" },
         onClose: () => { closes += 1; }, onConfirm: (payload) => { confirmations.push(payload); }, ...overrides,
     };
     const render = async (next: Partial<DialogProps> = {}) => {
         props = { ...props, ...next };
-        await act(async () => root.render(<App><CanvasNodeMaskEditDialog {...props} /></App>));
+        await act(async () => root.render(<App><CanvasNodeRegionEditDialog {...props} /></App>));
     };
     await render();
     const prompt = () => container.querySelector("textarea")!;
-    const canvas = () => container.querySelector("canvas")!;
+    const canvas = () => container.querySelector<HTMLDivElement>(".rgn-surface")!;
     const button = (label: string) => [...container.querySelectorAll("button")].find((item) => item.textContent === label);
     const fill = async (value: string) => {
         await act(async () => {
@@ -125,32 +134,32 @@ try {
     await retained.fill("  将选中区域改为红色  ");
     await retained.stroke();
     await click(retained.button("画质：standard"));
-    assert.deepEqual(paints.at(-1), [{ diameter: 100, erase: false, points: [[10, 12], [30, 24]] }]);
+    assert.equal(retained.container.querySelectorAll(".rgn-box").length, 1);
     const prompt = retained.prompt();
+    const promptBeforeSubmit = prompt.value;
     const canvas = retained.canvas();
-    await click(retained.button("AI 修改"));
+    await click(retained.button("生成"));
     assert.equal(retained.confirmations.length, 1);
-    assert.equal(retained.confirmations[0].prompt, "将选中区域改为红色");
+    assert.match(retained.confirmations[0].prompt, /将选中区域改为红色/);
+    assert.deepEqual(retained.confirmations[0].regions, [{ index: 1, x: 10, y: 12, width: 20, height: 12 }]);
     assert.equal(retained.confirmations[0].generationConfig?.quality, "high");
     await retained.render({ busy: true });
     assert.equal(retained.prompt(), prompt, "busy must keep the native editor mounted");
     assert.equal(retained.canvas(), canvas, "busy must retain the stroke document's canvas");
-    assert.equal(modalProps.confirmLoading, true);
     assert.equal(modalProps.keyboard, false);
     assert.equal(modalProps.maskClosable, false);
-    assert.equal(modalProps.cancelButtonProps?.disabled, true);
-    assert.equal(modalProps.okButtonProps?.disabled, true);
+    assert.equal((retained.button("生成") as HTMLButtonElement).disabled, true);
     assert.ok(retained.container.querySelector("[inert]"), "busy must make editing controls inert");
-    await click(retained.button("AI 修改"));
-    await click(retained.container.querySelector('[aria-label="关闭局部编辑"]'));
-    await act(async () => { modalProps.onOk(); modalProps.onCancel(); });
+    await click(retained.button("生成"));
+    await click(retained.container.querySelector('[aria-label="关闭"]'));
+    await act(async () => { submitFromEditor(); modalProps.onCancel(); });
     assert.equal(retained.confirmations.length, 1, "busy cannot confirm twice even through a retained callback");
     assert.equal(retained.closes(), 0, "busy cannot close the editor");
     assert.equal(exports.length, 1);
     await retained.render({ busy: false });
-    assert.equal(retained.prompt().value, "  将选中区域改为红色  ", "failed submission must preserve the exact editable prompt");
+    assert.equal(retained.prompt().value, promptBeforeSubmit, "failed submission must preserve the exact editable prompt");
     assert.equal(retained.container.querySelector("[inert]"), null);
-    await click(retained.button("AI 修改"));
+    await click(retained.button("生成"));
     assert.equal(retained.confirmations.length, 2);
     assert.deepEqual(retained.confirmations[1], retained.confirmations[0], "retry must preserve prompt, mask strokes and selected settings");
     assert.deepEqual(exports[1], exports[0]);
@@ -161,31 +170,31 @@ try {
     await recovery.fill("待确认请求的原输入");
     await recovery.stroke();
     await recovery.render({ submissionRecovery: <button type="button" onClick={() => { recoveries += 1; }}>恢复原局部编辑</button> });
-    assert.equal(modalProps.okButtonProps?.disabled, true);
+    assert.equal((recovery.button("生成") as HTMLButtonElement).disabled, true);
     assert.ok(recovery.container.querySelector("[inert]"));
-    await click(recovery.button("AI 修改"));
-    await act(async () => modalProps.onOk());
+    await click(recovery.button("生成"));
+    await act(async () => submitFromEditor());
     await click(recovery.button("恢复原局部编辑"));
     assert.equal(recoveries, 1);
     assert.equal(recovery.confirmations.length, 0, "pending recovery must use its frozen request without a new confirm");
     assert.equal(exports.length, 0, "pending recovery must not export a new mask");
-    assert.equal(recovery.prompt().value, "待确认请求的原输入");
+    assert.match(recovery.prompt().value, /待确认请求的原输入/);
     await recovery.close();
 
     const dirty = await mount({ confirmDiscard: true });
     await dirty.fill("保留未提交修改");
     await dirty.stroke();
-    await click(dirty.container.querySelector('[aria-label="关闭局部编辑"]'));
+    await click(dirty.container.querySelector('[aria-label="关闭"]'));
     assert.equal(dirty.closes(), 0);
     const discard = () => [...document.querySelectorAll<HTMLElement>(".ant-modal-confirm")].at(-1);
     assert.ok(discard()?.textContent?.includes("放弃局部编辑修改？"));
     await click([...discard()!.querySelectorAll("button")].find((item) => item.textContent === "继续编辑"));
     assert.equal(dirty.closes(), 0);
-    assert.equal(dirty.prompt().value, "保留未提交修改");
-    await click(dirty.button("AI 修改"));
+    assert.match(dirty.prompt().value, /保留未提交修改/);
+    await click(dirty.button("生成"));
     assert.equal(dirty.confirmations.length, 1);
     assert.equal(exports.at(-1)?.length, 1, "discard cancellation must retain the painted selection");
-    await click(dirty.container.querySelector('[aria-label="关闭局部编辑"]'));
+    await click(dirty.container.querySelector('[aria-label="关闭"]'));
     await click([...discard()!.querySelectorAll("button")].find((item) => item.textContent === "放弃修改并关闭"));
     assert.equal(dirty.closes(), 1);
     await dirty.close();
@@ -193,13 +202,13 @@ try {
     const native = await mount();
     await native.fill("原调用方正文");
     await native.stroke();
-    await click(native.container.querySelector('[aria-label="关闭局部编辑"]'));
+    await click(native.container.querySelector('[aria-label="关闭"]'));
     assert.equal(native.closes(), 1, "callers without confirmDiscard must keep their original direct close behavior");
     assert.equal(document.querySelector(".ant-modal-confirm"), null);
     await native.close();
 
     const clean = await mount({ confirmDiscard: true });
-    await click(clean.container.querySelector('[aria-label="关闭局部编辑"]'));
+    await click(clean.container.querySelector('[aria-label="关闭"]'));
     assert.equal(clean.closes(), 1, "an untouched editor must close without unnecessary confirmation");
     assert.equal(document.querySelector(".ant-modal-confirm"), null);
     await clean.close();
