@@ -31,6 +31,8 @@ function chapterTitleFromLine(line: string) {
     return chapterHeadingPatterns.some((pattern) => pattern.test(candidate)) ? title : null;
 }
 
+export const MAX_NOVEL_FILE_BYTES = 40 * 1024 * 1024;
+
 export function decodeNovelText(buffer: ArrayBuffer) {
     const bytes = new Uint8Array(buffer);
     if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return new TextDecoder("utf-8").decode(bytes.subarray(3));

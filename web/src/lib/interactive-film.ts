@@ -1,0 +1,144 @@
+import type { FilmGraph, FilmScene } from "@/services/api/interactive-films";
+import { filmRulesIssue } from "./film-interactions";
+
+const MAX_NOVEL_CHARACTERS = 6_000_000;
+
+export function insertFilmNode(graph: FilmGraph, sourceId: string, exitIndex: number, id: string, kind: "event" | "clip"): FilmGraph {
+    const source = graph.scenes.find((scene) => scene.id === sourceId);
+    if (!source || graph.scenes.length >= 300 || graph.scenes.some((scene) => scene.id === id)) return graph;
+    const append = source.mode === "ending" && exitIndex === -1;
+    const edge = source.exits[exitIndex];
+    if (!append && !edge?.target) return graph;
+    const scene: FilmScene = {
+        id,
+        title: kind === "event" ? "互动事件" : "视频片段",
+        source: "",
+        script: kind === "event" ? "点击继续" : "下一段剧情",
+        media: { kind },
+        mode: append ? "ending" : "next",
+        exits: append ? [] : [{ label: "继续", target: edge.target }],
+    };
+    const upstream: FilmScene = append ? { ...source, mode: "next", exits: [{ label: "继续", target: id }] } : { ...source, exits: source.exits.map((exit, index) => (index === exitIndex ? { ...exit, target: id } : exit)) };
+    return { ...graph, scenes: [...graph.scenes.map((s) => (s.id === sourceId ? upstream : s)), scene] };
+}
+
+export function filmNovelFits(novel: string) {
+    if (novel.length <= MAX_NOVEL_CHARACTERS) return true;
+    // Go counts Unicode code points. Count surrogate pairs once without allocating an array for the whole novel.
+    let characters = 0;
+    for (let i = 0; i < novel.length; i++) {
+        if (++characters > MAX_NOVEL_CHARACTERS) return false;
+        if (novel.codePointAt(i)! > 0xffff) i++;
+    }
+    return true;
+}
+
+export function filmGraphIssue(graph: FilmGraph, topologyOnly = false): string {
+    const nodes = new Map(graph.scenes.map((scene) => [scene.id, scene]));
+    if (!nodes.has(graph.start)) return "请选择有效的入口场次";
+    if (nodes.size !== graph.scenes.length) return "场次编号重复";
+    for (const scene of graph.scenes) {
+        const title = scene.title || scene.id;
+        if (!topologyOnly && scene.media?.kind === "clip" && !scene.media.resourceId) return title + " 需要绑定视频片段";
+        if (!scene.title.trim() || !scene.script.trim()) return title + " 缺少标题或剧本";
+        if (scene.mode === "ending" && scene.exits.length) return title + " 是结局，不能有出口";
+        if (scene.mode === "next" && scene.exits.length !== 1) return title + " 需要一个续播目标";
+        if (scene.mode === "choice" && scene.exits.length < 2) return title + " 至少需要两个选择";
+        for (const exit of scene.exits) {
+            if (!nodes.has(exit.target)) return title + " 的出口缺少有效目标";
+            if (scene.mode === "choice" && !exit.label.trim()) return title + " 的选项缺少文字";
+        }
+    }
+    const seen = new Set<string>(),
+        active = new Set<string>();
+    function walk(id: string): string {
+        if (active.has(id)) return "剧情回环经过 " + nodes.get(id)!.title;
+        if (seen.has(id)) return "";
+        seen.add(id);
+        active.add(id);
+        for (const { target } of nodes.get(id)!.exits) {
+            const issue = walk(target);
+            if (issue) return issue;
+        }
+        active.delete(id);
+        return "";
+    }
+    const issue = walk(graph.start);
+    const unreachable = graph.scenes.find((scene) => !seen.has(scene.id));
+    return issue || (unreachable ? "从入口无法到达 " + unreachable.title : topologyOnly ? "" : filmRulesIssue(graph));
+}
+
+export function parseFilmGraph(text: string): FilmGraph {
+    let data;
+    try {
+        data = JSON.parse(text.trim().replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/gi, ""));
+    } catch {
+        throw new Error("模型返回的剧情图不是有效 JSON，请重试");
+    }
+    if (!data || typeof data.start !== "string" || !Array.isArray(data.scenes) || !data.scenes.length || data.scenes.length > 300) throw new Error("剧情图缺少入口或有效场次");
+    const ids = new Set<string>();
+    const scenes: FilmScene[] = data.scenes.map((value: unknown) => {
+        if (!value || typeof value !== "object") throw new Error("场次格式无效");
+        const scene = value as Partial<FilmScene>;
+        if (
+            typeof scene.id !== "string" ||
+            !/^[a-zA-Z0-9_-]{1,64}$/.test(scene.id) ||
+            ids.has(scene.id) ||
+            typeof scene.title !== "string" ||
+            typeof scene.script !== "string" ||
+            !["next", "choice", "ending"].includes(String(scene.mode)) ||
+            !Array.isArray(scene.exits)
+        )
+            throw new Error("模型返回的场次编号、剧本或出口格式无效");
+        ids.add(scene.id);
+        const event = scene.media?.kind === "event";
+        const exits = scene.exits.map((exit) => {
+            if (!exit || typeof exit.target !== "string" || typeof exit.label !== "string") throw new Error("模型返回的出口格式无效");
+            if (event && exit.feedback !== undefined && (typeof exit.feedback !== "string" || Array.from(exit.feedback).length > 500)) throw new Error("互动反馈格式无效或超过 500 字");
+            return { target: exit.target, label: exit.label, ...(event && exit.feedback ? { feedback: exit.feedback } : {}) };
+        });
+        return { id: scene.id, title: scene.title, script: scene.script, source: typeof scene.source === "string" ? scene.source : "", mode: scene.mode!, exits, ...(event ? { media: { kind: "event" as const } } : {}) };
+    });
+    return { start: data.start, scenes };
+}
+
+// The generation contract emits start first, then scenes. Only close the array after a complete scene;
+// braces, escaped quotes and JSON examples inside dialogue must not be mistaken for a scene boundary.
+export function recoverFilmGraph(text: string): FilmGraph | undefined {
+    const body = text.trimStart().replace(/^\x60\x60\x60(?:json)?\s*/i, "");
+    const prefix = /^\{\s*"start"\s*:\s*"[\w-]+"\s*,\s*"scenes"\s*:\s*\[/.exec(body);
+    if (!prefix) return;
+    let depth = 0;
+    let quoted = false;
+    let end = 0;
+    for (let i = prefix[0].length; i < body.length; i++) {
+        const c = body[i];
+        if (quoted && c === "\\") i++;
+        else if (c === '"') quoted = !quoted;
+        else if (!quoted) {
+            if (c === "{") depth++;
+            else if (c === "}" && --depth === 0) end = i + 1;
+            else if (depth === 0 && c === "]") break;
+        }
+    }
+    if (!end) return;
+    try {
+        return parseFilmGraph(body.slice(0, end) + "]}");
+    } catch {
+        return;
+    }
+}
+
+export function missingFilmScenes(graph: FilmGraph): string[] {
+    const existing = new Set(graph.scenes.map((s) => s.id));
+    return [...new Set(graph.scenes.flatMap((s) => s.exits.map((exit) => exit.target)).filter((id) => id && !existing.has(id)))];
+}
+
+export function appendFilmScenes(graph: FilmGraph, addition: FilmGraph): FilmGraph {
+    const ids = new Set(graph.scenes.map((s) => s.id));
+    const missing = new Set(missingFilmScenes(graph));
+    if (addition.scenes.some((s) => ids.has(s.id))) throw new Error("续写返回了已有场次，原剧本已保留");
+    if (!addition.scenes.some((s) => missing.has(s.id))) throw new Error("续写未接上待补的场次，原剧本已保留");
+    if (graph.scenes.length + addition.scenes.length > 300) throw new Error("续写后超过 300 场，请调整改编方向");
+    return { start: graph.start, scenes: [...graph.scenes, ...addition.scenes] };
+}

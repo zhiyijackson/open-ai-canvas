@@ -152,7 +152,7 @@ func (s *Service) deleteUserAssetsWithResources(userID string, ids []string, pur
 					sharedAssetResourceIDs[reference.ResourceID] = struct{}{}
 					continue
 				}
-				if reference.Kind == "素材" || reference.Kind == repository.DramaResourceReferenceKind {
+				if reference.Kind == "素材" || reference.Kind == repository.DramaResourceReferenceKind || reference.Kind == repository.FilmResourceReferenceKind {
 					sharedAssetResourceIDs[reference.ResourceID] = struct{}{}
 					continue
 				}

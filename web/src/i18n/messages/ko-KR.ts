@@ -49,6 +49,7 @@ export const koKR: Messages = {
             switchUnavailable: "현재 창작이 완료된 후 대화를 전환하세요",
             home: "창작",
             projects: "숏드라마 제작",
+            interactiveFilms: "인터랙티브 영화",
             ecommerce: "이커머스 에이전트",
             canvas: "자유 캔버스",
             toolboxImage: "이미지 생성",

@@ -17,6 +17,7 @@ export function FinalView({
     onOpenSegment,
     onCompose,
     composing,
+    interactionTrack,
 }: {
     projectId: string;
     title: string;
@@ -26,13 +27,14 @@ export function FinalView({
     /** 手动重新合成成品（按实测时长拼接）。 */
     onCompose: () => void;
     composing: boolean;
+    interactionTrack?: React.ReactNode;
 }) {
     const { episode } = detail;
     const segments = [...detail.segments].sort((left, right) => left.index - right.index);
     const { message } = App.useApp();
     const [exportingDraft, setExportingDraft] = useState(false);
     const videoRef = useRef<HTMLVideoElement>(null);
-    const url = useResourceMediaUrl(episode.finalResourceId, "playback");
+    const url = useResourceMediaUrl(interactionTrack ? undefined : episode.finalResourceId, "playback");
     const available = segments.filter((segment) => segment.videoResourceId && (segment.videoStatus === "ready" || segment.videoStatus === "stale"));
     const missing = segments.length - available.length;
     const stale = available.filter((segment) => segment.videoStatus === "stale").length;
@@ -50,18 +52,20 @@ export function FinalView({
     return (
         <div className="drama-finalv">
             <div className="drama-finalv-stage">
-                <div className="drama-finalv-player" style={{ aspectRatio: aspectRatioValue(aspectRatio) }}>
-                    {url ? (
-                        <video ref={videoRef} key={url} src={url} controls playsInline />
-                    ) : (
-                        <div className="drama-finalv-empty">
-                            <Film className="size-6" aria-hidden />
-                            <span>
-                                {STAGE_LABEL[episode.stage]} · {rendering ? "正在合成成片…" : "暂无成片"}
-                            </span>
-                        </div>
-                    )}
-                </div>
+                {interactionTrack ?? (
+                    <div className="drama-finalv-player" style={{ aspectRatio: aspectRatioValue(aspectRatio) }}>
+                        {url ? (
+                            <video ref={videoRef} key={url} src={url} controls playsInline />
+                        ) : (
+                            <div className="drama-finalv-empty">
+                                <Film className="size-6" aria-hidden />
+                                <span>
+                                    {STAGE_LABEL[episode.stage]} · {rendering ? "正在合成成片…" : "暂无成片"}
+                                </span>
+                            </div>
+                        )}
+                    </div>
+                )}
                 <div className="drama-filmstrip thin-scrollbar">
                     {segments.map((segment, position) => (
                         <button

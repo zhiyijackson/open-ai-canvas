@@ -5,6 +5,16 @@ description: 影策后端核心持久化表与状态边界
 
 # 后端数据库
 
+## 互动影游（Schema 111）
+
+独立互动事件和视频片段使用场次的 `media.kind` 和 `media.resourceId`，素材删除与孤儿清理会检查这些引用。出口 `spot` 保存相对于底图的百分比坐标，`feedback` 保存点击反馈。插入事件或绑定现有片段只更新剧情图。
+
+选择点的 `question` 和热点的 `collectionName` 保存在作品的剧情图 JSON 内，随作品修订号更新。
+
+`interactive_films` 按用户保存作品名称、小说、改编方向和剧情图。图内场次 ID 与镜头顺序独立。版本号用于并发写入检查。投产后记录共享制作项目，以及每场对应的集 ID 和当次剧本快照，便于改稿后辨认旧视频。
+
+互动轨、出口条件、携带效果与线索回应保存在同一份剧情图 JSON 中，与作品共享版本号。作者试演期间的线索与物件保存在播放器的检查点。
+
 ## 模型请求插件发行版（Schema 109）
 
 `model_protocol_releases` 增加 `channel_models.protocol_release` 及索引，保存模型绑定的请求包 SHA-256。`tasks.protocol_binding_json` 和 `route_attempts.protocol_binding_json` 在新任务入队、路由尝试时记录版本、上游型号、能力与报价修订，以及渠道连接的 HMAC。快照仅在服务端使用。历史记录的新增列保持空值。

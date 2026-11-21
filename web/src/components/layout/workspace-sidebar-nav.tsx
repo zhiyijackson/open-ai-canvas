@@ -1,5 +1,5 @@
 import { Popover } from "antd";
-import { ChevronRight, ChevronsUpDown, CircleUserRound, History as HistoryIcon, Image as ImageIcon, PanelLeftClose, PanelLeftOpen, ShoppingBag, Users, Video, Wallet, FileText } from "lucide-react";
+import { ChevronRight, ChevronsUpDown, CircleUserRound, GitBranch, History as HistoryIcon, Image as ImageIcon, PanelLeftClose, PanelLeftOpen, ShoppingBag, Users, Video, Wallet, FileText } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { Link, useLocation, useSearchParams } from "react-router";
@@ -70,6 +70,7 @@ function buildNav(features: FeatureAvailability, t: TFunction, canUseSkills: boo
                 { ...toolItem("canvas", "/canvas", t), title: t("nav.sidebar.canvas") },
                 ...(features.teamsEnabled ? [{ id: "teams", title: "公司与团队", icon: Users, to: "/teams" }] : []),
                 ...(features.shortDramaEnabled ? [{ ...toolItem("projects", "/projects", t), title: t("nav.sidebar.projects") }] : []),
+                ...(features.shortDramaEnabled ? [{ id: "interactive-films", title: t("nav.sidebar.interactiveFilms"), icon: GitBranch, to: "/interactive-films" }] : []),
                 ...(features.ecommerceEnabled ? [{ id: "ecommerce", title: t("nav.sidebar.ecommerce"), icon: ShoppingBag, to: "/ecommerce" }] : []),
             ],
         },

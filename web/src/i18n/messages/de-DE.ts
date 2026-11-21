@@ -49,6 +49,7 @@ export const deDE: Messages = {
             switchUnavailable: "Warte, bis die aktuelle Erstellung abgeschlossen ist",
             home: "Erstellen",
             projects: "Kurzserien",
+            interactiveFilms: "Interaktive Filme",
             ecommerce: "E-Commerce-Agent",
             canvas: "Freier Canvas",
             toolboxImage: "Bildgenerierung",

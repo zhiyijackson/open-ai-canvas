@@ -1,7 +1,7 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { App, Button, Dropdown } from "antd";
-import { ArrowLeft, Brush, CheckCheck, Clapperboard, FileDown, FileUp, Film, Inbox, Package, Pause, Pencil, Play, ScrollText, Settings2, UsersRound } from "lucide-react";
+import { ArrowLeft, Brush, CheckCheck, Clapperboard, FileDown, FileUp, Inbox, Package, Pause, Pencil, Play, Settings2, UsersRound } from "lucide-react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 
 import { WorkspacePage } from "@/components/layout/workspace-page";
@@ -54,7 +54,19 @@ import { agentPageContextKey, type AgentPageContext } from "@/lib/agent-page-con
 import { useGlobalAgentStore } from "@/stores/use-global-agent-store";
 import "./drama.css";
 
-type Tab = "board" | "script" | "final";
+import { StudioBody, StudioTabs, studioTab } from "./studio/studio-layout";
+
+type FilmNavigation = {
+    title: string;
+    sceneTitle: string;
+    sceneCount: number;
+    currentEpisodeIds: Set<string>;
+    actions: ReactNode;
+    rail: (episodes: DramaEpisodeRow[], showProduction: () => void) => ReactNode;
+    pendingScene: ReactNode;
+    interactionTrack: (episode: Pick<DramaEpisodeRow, "finalStale" | "finalResourceId">) => ReactNode;
+    episodePath: (id: string, search: string) => string;
+};
 type StudioView = "production" | "cast" | "inbox" | "settings";
 
 const AssetImportModal = lazy(() => import("./studio/asset-transfer").then((module) => ({ default: module.AssetImportModal })));
@@ -69,10 +81,16 @@ const AWAITING_MEDIA_BANNER = {
 
 export default function DramaStudioPage() {
     const { projectId = "", episodeId: routeEpisodeId = "" } = useParams();
+    const summaryQuery = useDramaSummary(projectId);
+    return <ProductionStudio projectId={projectId} routeEpisodeId={routeEpisodeId} summaryQuery={summaryQuery} />;
+}
+
+export function ProductionStudio({ projectId, routeEpisodeId, summaryQuery, film }: { projectId: string; routeEpisodeId: string; summaryQuery: ReturnType<typeof useDramaSummary>; film?: FilmNavigation }) {
     const navigate = useNavigate();
+    const library = film ? "/interactive-films" : "/projects";
     const { message, modal } = App.useApp();
     const [searchParams, setSearchParams] = useSearchParams();
-    const tab = (["board", "script", "final"].includes(searchParams.get("tab") || "") ? searchParams.get("tab") : "board") as Tab;
+    const tab = studioTab(searchParams.get("tab"));
     const shotParam = searchParams.get("shot") || "";
     const view = (["cast", "inbox", "settings"].includes(searchParams.get("view") || "") ? searchParams.get("view") : "production") as StudioView;
     const castFocus = searchParams.get("cast") || "";
@@ -84,15 +102,17 @@ export default function DramaStudioPage() {
     const [deleting, setDeleting] = useState<DramaEpisodeRow | null>(null);
     const [pickingChapters, setPickingChapters] = useState(false);
     const [assetDialog, setAssetDialog] = useState<"export" | "import" | null>(null);
-    // 窄屏只显示一栏：集列表与制作区用分段切换（宽屏两栏并排，不受影响）。
-    const [mobilePane, setMobilePane] = useState<"episodes" | "production">("production");
+
     const invalidate = useDramaInvalidate(projectId);
 
-    const summaryQuery = useDramaSummary(projectId);
     const summary = summaryQuery.data;
     const canvas = useOpenDramaCanvas(summary);
     const episodes = summary?.episodes || [];
-    const episodeId = episodes.some((episode) => episode.id === routeEpisodeId) ? routeEpisodeId : (episodes.find((episode) => episode.stage === "review") || episodes.find((episode) => episode.stage !== "done") || episodes[0])?.id || "";
+    const episodeId = film
+        ? routeEpisodeId
+        : episodes.some((episode) => episode.id === routeEpisodeId)
+          ? routeEpisodeId
+          : (episodes.find((episode) => episode.stage === "review") || episodes.find((episode) => episode.stage !== "done") || episodes[0])?.id || "";
     const episodeRow = episodes.find((episode) => episode.id === episodeId);
     const awaitingCount = episodes.filter((episode) => episode.awaitingMedia).length;
     const running = summary?.production.status === "running";
@@ -102,6 +122,7 @@ export default function DramaStudioPage() {
     const { cast, byId: castById } = castQuery;
     const shots = useMemo(() => detail?.shots || [], [detail]);
     const currentShot = shots.find((shot) => shot.id === shotParam);
+    const contextLabel = film ? `影游 · ${film.sceneTitle}` : `短剧 · 第 ${episodeRow?.number || "—"} 集`;
 
     // 短剧制作台向全局小影助手发布当前页面的资源身份。正文始终由服务端读取，
     // 页面只冻结项目、集和镜头 ID，避免助手拿到切页前的旧脚本继续写入。
@@ -117,14 +138,14 @@ export default function DramaStudioPage() {
         }
         store.setPage({
             context: pageContext,
-            label: `短剧 · 第 ${episodeRow?.number || "—"} 集${currentShot ? ` · 镜头 ${currentShot.position + 1}` : ""}`,
+            label: contextLabel + (currentShot ? ` · 镜头 ${currentShot.position + 1}` : ""),
         });
         const publishedKey = agentPageContextKey(pageContext);
         return () => {
             const current = useGlobalAgentStore.getState().page?.context;
             if (agentPageContextKey(current) === publishedKey) useGlobalAgentStore.getState().setPage(null);
         };
-    }, [currentShot, episodeRow?.number, episodeId, pageContext, projectId]);
+    }, [currentShot, contextLabel, pageContext, projectId]);
 
     const setParams = useCallback(
         (patch: Record<string, string | null>) => {
@@ -140,20 +161,21 @@ export default function DramaStudioPage() {
     const discussShot = useCallback(
         (shot: DramaShot) => {
             const context: AgentPageContext = { kind: "drama", projectId, episodeId, shotId: shot.id };
-            useGlobalAgentStore.getState().setPage({ context, label: `短剧 · 第 ${episodeRow?.number || "—"} 集 · 镜头 ${shot.position + 1}` });
+            useGlobalAgentStore.getState().setPage({ context, label: `${contextLabel} · 镜头 ${shot.position + 1}` });
             setParams({ tab: "script", shot: shot.id, segment: null });
             useGlobalAgentStore.getState().requestPrefill({
                 text: `请优化当前短剧制作台的这个分镜。先读取最新镜头内容，再根据我的要求提出或执行修改。项目 ID：${projectId}；集 ID：${episodeId}；镜头 ID：${shot.id}。`,
                 displayText: `讨论镜头 ${shot.position + 1}`,
             });
         },
-        [episodeId, episodeRow?.number, projectId, setParams],
+        [episodeId, contextLabel, projectId, setParams],
     );
+    const episodePath = useCallback((id: string, search: string) => (film ? film.episodePath(id, search) : `/projects/${projectId}/e/${id}${search}`), [projectId, film]);
     const selectEpisode = useCallback(
         (id: string) => {
-            navigate({ pathname: `/projects/${projectId}/e/${id}`, search: tab === "board" ? "" : `?tab=${tab}` });
+            navigate(episodePath(id, tab === "board" ? "" : `?tab=${tab}`));
         },
-        [navigate, projectId, tab],
+        [navigate, episodePath, tab],
     );
     const segmentParam = searchParams.get("segment");
     const openSegmentIndex = segmentParam !== null && /^\d+$/.test(segmentParam) ? Number(segmentParam) : undefined;
@@ -163,6 +185,7 @@ export default function DramaStudioPage() {
 
     // [ / ] 切换上一集 / 下一集。
     useEffect(() => {
+        if (film) return;
         const onKey = (event: KeyboardEvent) => {
             if (isTypingTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
             if (event.key !== "[" && event.key !== "]") return;
@@ -172,7 +195,7 @@ export default function DramaStudioPage() {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [episodeId, episodes, selectEpisode]);
+    }, [episodeId, episodes, selectEpisode, film]);
 
     const errorMessage = (error: unknown, fallback: string) => message.error(error instanceof Error ? error.message : fallback);
     const toggleRun = useMutation({
@@ -342,10 +365,10 @@ export default function DramaStudioPage() {
             openView("settings");
             return;
         }
-        if (item.episodeId) navigate({ pathname: `/projects/${projectId}/e/${item.episodeId}`, search: item.kind === "segment_failed" ? `?segment=${item.segmentIndex}` : "" });
+        if (item.episodeId) navigate(episodePath(item.episodeId, item.kind === "segment_failed" ? `?segment=${item.segmentIndex}` : ""));
     };
     const jumpToJob = (job: DramaJob) => {
-        if (job.episodeId) navigate({ pathname: `/projects/${projectId}/e/${job.episodeId}`, search: "" });
+        if (job.episodeId) navigate(episodePath(job.episodeId, ""));
     };
 
     // 直接打开草稿的制作台地址时回到创建页，草稿参数都在那里编辑。
@@ -354,14 +377,15 @@ export default function DramaStudioPage() {
     if (summaryQuery.isError || !summary)
         return (
             <WorkspacePage>
-                <WorkspaceErrorState title="作品不可用" description="作品不存在、已被删除，或当前账号没有访问权限。" actionLabel="返回作品列表" onRetry={() => navigate("/projects")} />
+                <WorkspaceErrorState title="作品不可用" description="作品不存在、已被删除，或当前账号没有访问权限。" actionLabel="返回作品列表" onRetry={() => navigate(library)} />
             </WorkspacePage>
         );
 
     const { production } = summary;
     const runLabel = running ? "暂停" : production.status === "draft" ? "开始制作" : "继续制作";
-    const doneEpisodes = episodes.filter((episode) => episode.stage === "done" && !episode.finalStale).length;
-    const progress = episodes.length ? doneEpisodes / episodes.length : 0;
+    const doneEpisodes = episodes.filter((episode) => episode.stage === "done" && !episode.finalStale && (!film || film.currentEpisodeIds.has(episode.id))).length;
+    const total = film?.sceneCount ?? episodes.length;
+    const progress = total ? doneEpisodes / total : 0;
     const aspectRatio = production.settings.aspectRatio;
     const sampleReview = production.settings.reviewMode === "sample" && !production.sampleApproved && detail?.episode.number === 1 && detail.episode.stage === "done" && !detail.episode.finalStale;
     const reviewing = sampleReview || (production.settings.reviewMode === "every" && detail?.episode.stage === "review");
@@ -402,13 +426,13 @@ export default function DramaStudioPage() {
 
     return (
         <WorkspacePage className="!overflow-hidden" fluid scroll={false}>
-            <div className="drama-root drama-studio">
+            <div className={film ? "drama-root drama-studio film-production-studio" : "drama-root drama-studio"}>
                 <header className="drama-topbar">
-                    <Link to="/projects" viewTransition className="product-icon-button" aria-label="返回作品列表">
+                    <Link to={library} viewTransition className="product-icon-button" aria-label="返回作品列表">
                         <ArrowLeft className="size-4" />
                     </Link>
                     <div className="drama-topbar-title">
-                        <h1 title={summary.project.name}>{summary.project.name}</h1>
+                        <h1 title={film?.title || summary.project.name}>{film?.title || summary.project.name}</h1>
                         {waitingForMedia ? (
                             <span className="drama-chip is-ready">
                                 <span className="drama-dot" />
@@ -427,9 +451,10 @@ export default function DramaStudioPage() {
                                 <span style={progressFillStyle(Math.max(progress * 100, 2))} />
                             </span>
                             <span>
-                                {doneEpisodes}/{episodes.length} 集成片{production.planDone ? "" : " · 分集中"}
+                                {doneEpisodes}/{total} {film ? "场成片" : "集成片"}
+                                {!film && !production.planDone ? " · 分集中" : ""}
                             </span>
-                            <span>· {formatCount(production.chapterCount)} 章原文</span>
+                            {!film && <span>· {formatCount(production.chapterCount)} 章原文</span>}
                         </div>
                     ) : null}
                     <nav className="drama-nav" aria-label="制作台视图">
@@ -452,6 +477,7 @@ export default function DramaStudioPage() {
                     </nav>
                     {/* 窄屏只保留图标（全部生成保留集数），文字由 aria-label 与 title 提供。 */}
                     <div className="drama-topbar-actions">
+                        {film?.actions}
                         <Dropdown
                             trigger={["click"]}
                             placement="bottomRight"
@@ -520,7 +546,7 @@ export default function DramaStudioPage() {
                                 cast={cast}
                                 activeEpisodeId={episodeId}
                                 onOpenCast={(id) => setParams({ assets: null, cast: id })}
-                                onOpenSegment={(id, index) => navigate({ pathname: `/projects/${projectId}/e/${id}`, search: `?segment=${index}` })}
+                                onOpenSegment={(id, index) => navigate(episodePath(id, `?segment=${index}`))}
                             />
                         ) : (
                             <CastPanel
@@ -556,208 +582,201 @@ export default function DramaStudioPage() {
                     />
                 ) : view === "settings" ? (
                     <SettingsPanel projectId={projectId} summary={summary} cast={cast} onChanged={() => invalidate(episodeId, { assetsChanged: true })} />
-                ) : !episodes.length ? (
+                ) : !episodes.length && !film ? (
                     <StudioGenesis summary={summary} />
                 ) : (
-                    <div className={`drama-body is-inspector-hidden ${openSegmentIndex !== undefined ? "is-covered" : ""}`} data-mobile-pane={mobilePane}>
-                        <div className="drama-mobile-tabs">
-                            <SegmentedControl<"episodes" | "production">
-                                block
-                                size="sm"
-                                ariaLabel="切换集列表与制作区"
-                                value={mobilePane}
-                                onChange={setMobilePane}
-                                options={[
-                                    { label: `剧集 · ${episodes.length}`, value: "episodes" },
-                                    { label: "制作", value: "production" },
-                                ]}
-                            />
-                        </div>
-                        <EpisodeRail
-                            episodes={episodes}
-                            currentId={episodeId}
-                            planning={!production.planDone}
-                            reservedChapters={production.reservedChapterCount}
-                            onSelect={(id) => {
-                                selectEpisode(id);
-                                setMobilePane("production");
-                            }}
-                            onAdd={() => {
-                                setPlacement(undefined);
-                                setAdding(true);
-                            }}
-                            onInsert={(episode, position) => {
-                                setPlacement({ anchorId: episode.id, anchorNumber: episode.number, position });
-                                setAdding(true);
-                            }}
-                            onRename={setRenaming}
-                            onDelete={setDeleting}
-                            onPickChapters={() => setPickingChapters(true)}
-                        />
-                        <main className="drama-main">
-                            {episodeRow ? (
-                                <div className="drama-ep-header">
-                                    <div className="drama-ep-heading">
-                                        <div className="drama-eyebrow">
-                                            第 {episodeRow.number} 集 · {STAGE_LABEL[episodeRow.stage]}
+                    <StudioBody
+                        label={film ? `剧情图 · ${film.sceneCount} 场` : `剧集 · ${episodes.length}`}
+                        covered={openSegmentIndex !== undefined}
+                        rail={(showProduction) =>
+                            film ? (
+                                film.rail(episodes, showProduction)
+                            ) : (
+                                <EpisodeRail
+                                    episodes={episodes}
+                                    currentId={episodeId}
+                                    planning={!production.planDone}
+                                    reservedChapters={production.reservedChapterCount}
+                                    onSelect={(id) => {
+                                        selectEpisode(id);
+                                        showProduction();
+                                    }}
+                                    onAdd={() => {
+                                        setPlacement(undefined);
+                                        setAdding(true);
+                                    }}
+                                    onInsert={(episode, position) => {
+                                        setPlacement({ anchorId: episode.id, anchorNumber: episode.number, position });
+                                        setAdding(true);
+                                    }}
+                                    onRename={setRenaming}
+                                    onDelete={setDeleting}
+                                    onPickChapters={() => setPickingChapters(true)}
+                                />
+                            )
+                        }
+                    >
+                        {film && !episodeRow ? (
+                            film.pendingScene
+                        ) : (
+                            <main className="drama-main">
+                                {episodeRow ? (
+                                    <div className="drama-ep-header">
+                                        <div className="drama-ep-heading">
+                                            <div className="drama-eyebrow">
+                                                {film ? "当前场次" : `第 ${episodeRow.number} 集`} · {STAGE_LABEL[episodeRow.stage]}
+                                            </div>
+                                            <h2 title={film?.sceneTitle || episodeRow.title}>
+                                                {film?.sceneTitle || episodeRow.title}
+                                                {!film && (
+                                                    <button type="button" className="drama-title-edit" aria-label="重命名本集" onClick={() => setRenaming(episodeRow)}>
+                                                        <Pencil className="size-3.5" />
+                                                    </button>
+                                                )}
+                                            </h2>
+                                            <p>
+                                                <span>{episodeRow.shotCount} 镜</span>
+                                                {episodeRow.durationMs ? <span>{formatDuration(episodeRow.durationMs)}</span> : null}
+                                                <StagePips episode={episodeRow} size="md" />
+                                            </p>
                                         </div>
-                                        <h2 title={episodeRow.title}>
-                                            {episodeRow.title}
-                                            <button type="button" className="drama-title-edit" aria-label="重命名本集" onClick={() => setRenaming(episodeRow)}>
-                                                <Pencil className="size-3.5" />
-                                            </button>
-                                        </h2>
-                                        <p>
-                                            <span>{episodeRow.shotCount} 镜</span>
-                                            {episodeRow.durationMs ? <span>{formatDuration(episodeRow.durationMs)}</span> : null}
-                                            <StagePips episode={episodeRow} size="md" />
-                                        </p>
-                                    </div>
-                                    <div className="drama-tabs" role="tablist" aria-label="视图">
-                                        <button type="button" role="tab" className="drama-tab" aria-selected={tab === "script"} onClick={() => setParams({ tab: "script" })}>
-                                            <ScrollText className="size-3.5" />
-                                            剧本
-                                        </button>
-                                        <button type="button" role="tab" className="drama-tab" aria-selected={tab === "board"} onClick={() => setParams({ tab: null })}>
-                                            <Clapperboard className="size-3.5" />
-                                            分镜
-                                        </button>
-                                        <button type="button" role="tab" className="drama-tab" aria-selected={tab === "final"} onClick={() => setParams({ tab: "final" })}>
-                                            <Film className="size-3.5" />
-                                            成片
-                                        </button>
-                                    </div>
-                                    <Button
-                                        size="small"
-                                        icon={<Brush className="size-3.5" />}
-                                        disabled={!episodeRow.stats.segments}
-                                        loading={canvas.opening === `episode:${episodeRow.id}`}
-                                        onClick={() => void canvas.open({ kind: "episode", episodeId: episodeRow.id })}
-                                        title={episodeRow.stats.segments ? "把本集全部剧情段投送到精修画布" : "本集还没有剧情段"}
-                                    >
-                                        在画布中打开本集
-                                    </Button>
-                                </div>
-                            ) : null}
-                            <div className="drama-banners">
-                                {production.status === "paused" ? (
-                                    <div className="drama-banner">
-                                        <div className="drama-banner-text">
-                                            <strong>制作已暂停</strong>
-                                            <span title={production.pauseReason || undefined}>{production.pauseReason || "不会再派发新的生成任务；重新改编、生成视频或重试会自动继续制作。"}</span>
-                                        </div>
-                                        <Button size="small" type="primary" icon={<Play className="size-3.5" />} loading={toggleRun.isPending} onClick={() => toggleRun.mutate()}>
-                                            继续制作
+                                        <StudioTabs tab={tab} onChange={(value) => setParams({ tab: value === "board" ? null : value, segment: null, shot: null })} />
+                                        <Button
+                                            size="small"
+                                            icon={<Brush className="size-3.5" />}
+                                            disabled={!episodeRow.stats.segments}
+                                            loading={canvas.opening === `episode:${episodeRow.id}`}
+                                            onClick={() => void canvas.open({ kind: "episode", episodeId: episodeRow.id })}
+                                            title={episodeRow.stats.segments ? "把全部剧情段投送到精修画布" : "还没有剧情段"}
+                                        >
+                                            在画布中打开{film ? "本场" : "本集"}
                                         </Button>
                                     </div>
                                 ) : null}
-                                {episodeRow?.awaitingMedia ? (
-                                    <div className="drama-banner is-ready">
-                                        <Clapperboard className="size-5 shrink-0 text-[var(--workspace-accent)]" />
-                                        <div className="drama-banner-text" title={`${AWAITING_MEDIA_BANNER.title}\n${AWAITING_MEDIA_BANNER.text}`}>
-                                            <strong>{AWAITING_MEDIA_BANNER.title}</strong>
-                                            <span>{AWAITING_MEDIA_BANNER.text}</span>
-                                        </div>
-                                        <div className="flex shrink-0 gap-2">
-                                            {tab !== "script" ? <Button onClick={() => setParams({ tab: "script" })}>看剧本与原文</Button> : null}
-                                            <Button
-                                                type="primary"
-                                                icon={<Play className="size-4" />}
-                                                loading={release.isPending && release.variables?.target === "episodes"}
-                                                onClick={() => release.mutate({ target: "episodes", episodeIds: [episodeRow.id] })}
-                                            >
-                                                生成本集视频
+                                <div className="drama-banners">
+                                    {production.status === "paused" ? (
+                                        <div className="drama-banner">
+                                            <div className="drama-banner-text">
+                                                <strong>制作已暂停</strong>
+                                                <span title={production.pauseReason || undefined}>{production.pauseReason || "不会再派发新的生成任务；重新改编、生成视频或重试会自动继续制作。"}</span>
+                                            </div>
+                                            <Button size="small" type="primary" icon={<Play className="size-3.5" />} loading={toggleRun.isPending} onClick={() => toggleRun.mutate()}>
+                                                继续制作
                                             </Button>
                                         </div>
-                                    </div>
-                                ) : null}
-                                {reviewing ? (
-                                    <div className="drama-banner is-info">
-                                        <CheckCheck className="size-5 shrink-0 text-[var(--workspace-accent)]" />
-                                        <div className="drama-banner-text" title={`${reviewBanner.title}\n${reviewBanner.text}`}>
-                                            <strong>{reviewBanner.title}</strong>
-                                            <span>{reviewBanner.text}</span>
+                                    ) : null}
+                                    {episodeRow?.awaitingMedia ? (
+                                        <div className="drama-banner is-ready">
+                                            <Clapperboard className="size-5 shrink-0 text-[var(--workspace-accent)]" />
+                                            <div className="drama-banner-text" title={`${AWAITING_MEDIA_BANNER.title}\n${AWAITING_MEDIA_BANNER.text}`}>
+                                                <strong>{AWAITING_MEDIA_BANNER.title}</strong>
+                                                <span>{AWAITING_MEDIA_BANNER.text}</span>
+                                            </div>
+                                            <div className="flex shrink-0 gap-2">
+                                                {tab !== "script" ? <Button onClick={() => setParams({ tab: "script" })}>看剧本与原文</Button> : null}
+                                                <Button
+                                                    type="primary"
+                                                    icon={<Play className="size-4" />}
+                                                    loading={release.isPending && release.variables?.target === "episodes"}
+                                                    onClick={() => release.mutate({ target: "episodes", episodeIds: [episodeRow.id] })}
+                                                >
+                                                    生成本集视频
+                                                </Button>
+                                            </div>
                                         </div>
-                                        <Button type="primary" loading={approve.isPending} onClick={() => approve.mutate()}>
-                                            {sampleReview ? "确认样片，继续全剧" : "确认，生成视频"}
-                                        </Button>
-                                    </div>
-                                ) : null}
-                                {sampleWaiting ? (
-                                    <div className="drama-banner is-info">
-                                        <div className="drama-banner-text">
-                                            <strong>剧本已就绪，等待样片确认</strong>
-                                            <span>第 1 集样片确认后，本集会按剧情段顺序生成视频。</span>
+                                    ) : null}
+                                    {reviewing ? (
+                                        <div className="drama-banner is-info">
+                                            <CheckCheck className="size-5 shrink-0 text-[var(--workspace-accent)]" />
+                                            <div className="drama-banner-text" title={`${reviewBanner.title}\n${reviewBanner.text}`}>
+                                                <strong>{reviewBanner.title}</strong>
+                                                <span>{reviewBanner.text}</span>
+                                            </div>
+                                            <Button type="primary" loading={approve.isPending} onClick={() => approve.mutate()}>
+                                                {sampleReview ? "确认样片，继续全剧" : "确认，生成视频"}
+                                            </Button>
                                         </div>
-                                        <Button size="small" onClick={() => selectEpisode(episodes[0].id)}>
-                                            去看样片
-                                        </Button>
-                                    </div>
-                                ) : null}
-                                {detail?.episode.error ? (
-                                    <div className="drama-banner is-error">
-                                        <div className="drama-banner-text">
-                                            <strong>本集遇到问题</strong>
-                                            <span>{detail.episode.error}</span>
+                                    ) : null}
+                                    {sampleWaiting ? (
+                                        <div className="drama-banner is-info">
+                                            <div className="drama-banner-text">
+                                                <strong>剧本已就绪，等待样片确认</strong>
+                                                <span>第 1 集样片确认后，本集会按剧情段顺序生成视频。</span>
+                                            </div>
+                                            <Button size="small" onClick={() => selectEpisode(episodes[0].id)}>
+                                                去看样片
+                                            </Button>
                                         </div>
-                                        <span className="text-[var(--fs-tiny)] text-foreground/50">可在底部队列“全部重试”</span>
-                                    </div>
-                                ) : null}
-                            </div>
-                            <div className="drama-scroll thin-scrollbar">
-                                {!detail ? (
-                                    <WorkspaceLoadingState label="正在读取本集" rows={2} />
-                                ) : tab === "board" ? (
-                                    <Storyboard
-                                        shots={shots}
-                                        segments={detail.segments}
-                                        aspectRatio={aspectRatio}
-                                        castById={castById}
-                                        defaultVideoModel={production.settings.models.video}
-                                        videoResolution={production.settings.videoResolution}
-                                        busy={busy}
-                                        keyboardEnabled={openSegmentIndex === undefined && view === "production"}
-                                        onOpen={openSegment}
-                                        onGenerate={(segments, videoModel) => generateSegments.mutate({ segments, videoModel })}
-                                        onReprocess={(index) => reprocessSegment.mutate(index)}
-                                        reprocessing={reprocessSegment.isPending ? reprocessSegment.variables : undefined}
-                                        onWritePrompts={(indexes) => writeSegment.mutate(indexes)}
-                                        empty={episodeEmpty}
-                                    />
-                                ) : tab === "script" ? (
-                                    <ScriptView
-                                        projectId={projectId}
-                                        detail={detail}
-                                        storyboard={production.settings.storyboard}
-                                        currentId={currentShot?.id || ""}
-                                        busy={busy}
-                                        onCurrent={(id) => setParams({ shot: id })}
-                                        onRescript={() => rescript.mutate()}
-                                        onPatchShot={(shot, patch) => patchShot.mutate({ shot, patch })}
-                                        onInsertShot={(shot, position) => insertShot.mutate({ shot, position })}
-                                        onDeleteShot={(shot) => removeShot.mutate(shot)}
-                                        onDiscussShot={discussShot}
-                                        onSourceSaved={(again) => {
-                                            invalidate(episodeId);
-                                            if (again) rescript.mutate();
-                                        }}
-                                        empty={episodeEmpty}
-                                    />
-                                ) : (
-                                    <FinalView
-                                        projectId={projectId}
-                                        title={summary.project.name}
-                                        detail={detail}
-                                        aspectRatio={aspectRatio}
-                                        onOpenSegment={(index) => setParams({ tab: null, segment: String(index), shot: null })}
-                                        onCompose={() => composeFinal.mutate()}
-                                        composing={composeFinal.isPending}
-                                    />
-                                )}
-                            </div>
-                        </main>
+                                    ) : null}
+                                    {detail?.episode.error ? (
+                                        <div className="drama-banner is-error">
+                                            <div className="drama-banner-text">
+                                                <strong>本集遇到问题</strong>
+                                                <span>{detail.episode.error}</span>
+                                            </div>
+                                            <span className="text-[var(--fs-tiny)] text-foreground/50">可在底部队列“全部重试”</span>
+                                        </div>
+                                    ) : null}
+                                </div>
+                                <div className="drama-scroll thin-scrollbar">
+                                    {!detail && episodeQuery.isError ? (
+                                        <WorkspaceErrorState title={film ? "场次读取失败" : "本集读取失败"} description={episodeQuery.error.message} onRetry={() => void episodeQuery.refetch()} />
+                                    ) : !detail ? (
+                                        <WorkspaceLoadingState label="正在读取本集" rows={2} />
+                                    ) : tab === "board" ? (
+                                        <Storyboard
+                                            shots={shots}
+                                            segments={detail.segments}
+                                            aspectRatio={aspectRatio}
+                                            castById={castById}
+                                            defaultVideoModel={production.settings.models.video}
+                                            videoResolution={production.settings.videoResolution}
+                                            busy={busy}
+                                            keyboardEnabled={openSegmentIndex === undefined && view === "production"}
+                                            onOpen={openSegment}
+                                            onGenerate={(segments, videoModel) => generateSegments.mutate({ segments, videoModel })}
+                                            onReprocess={(index) => reprocessSegment.mutate(index)}
+                                            reprocessing={reprocessSegment.isPending ? reprocessSegment.variables : undefined}
+                                            onWritePrompts={(indexes) => writeSegment.mutate(indexes)}
+                                            empty={episodeEmpty}
+                                        />
+                                    ) : tab === "script" ? (
+                                        <ScriptView
+                                            projectId={projectId}
+                                            detail={detail}
+                                            storyboard={production.settings.storyboard}
+                                            currentId={currentShot?.id || ""}
+                                            busy={busy}
+                                            onCurrent={(id) => setParams({ shot: id })}
+                                            onRescript={() => rescript.mutate()}
+                                            onPatchShot={(shot, patch) => patchShot.mutate({ shot, patch })}
+                                            onInsertShot={(shot, position) => insertShot.mutate({ shot, position })}
+                                            onDeleteShot={(shot) => removeShot.mutate(shot)}
+                                            onDiscussShot={discussShot}
+                                            onSourceSaved={(again) => {
+                                                invalidate(episodeId);
+                                                if (again) rescript.mutate();
+                                            }}
+                                            empty={episodeEmpty}
+                                        />
+                                    ) : (
+                                        <FinalView
+                                            interactionTrack={film && detail.episode.finalResourceId && !detail.episode.finalStale ? film.interactionTrack(detail.episode) : undefined}
+                                            projectId={projectId}
+                                            title={summary.project.name}
+                                            detail={detail}
+                                            aspectRatio={aspectRatio}
+                                            onOpenSegment={(index) => setParams({ tab: null, segment: String(index), shot: null })}
+                                            onCompose={() => composeFinal.mutate()}
+                                            composing={composeFinal.isPending}
+                                        />
+                                    )}
+                                </div>
+                            </main>
+                        )}
                         <SegmentDialog
                             detail={tab === "board" ? detail : undefined}
+                            sceneTitle={film?.sceneTitle}
                             segmentIndex={openSegmentIndex}
                             shotId={currentShot?.id}
                             castById={castById}
@@ -784,7 +803,7 @@ export default function DramaStudioPage() {
                             onOpenCanvas={(segment, target) => void canvas.open({ kind: "segment", episodeId, segmentIndex: segment.index }, target)}
                             canvasOpening={Boolean(canvas.opening?.startsWith("segment:"))}
                         />
-                    </div>
+                    </StudioBody>
                 )}
 
                 <QueueBar projectId={projectId} summary={summary} retrying={retry.isPending} onRetry={() => retry.mutate()} onJump={jumpToJob} />

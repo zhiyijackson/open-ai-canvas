@@ -48,6 +48,7 @@ export const enUS: Messages = {
             switchUnavailable: "Wait for the current creation to finish",
             home: "Create",
             projects: "Short dramas",
+            interactiveFilms: "Interactive films",
             ecommerce: "E-commerce Agent",
             canvas: "Canvas",
             toolboxImage: "Image generation",

@@ -398,6 +398,9 @@ var schemaMigrations = []migration{
 		}
 		return reconcileAgentStorageUsage(tx)
 	}},
+	{version: 111, name: "interactive_films", checksum: "sha256:interactive-films-v110", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.InteractiveFilm{})
+	}},
 }
 
 func migrateAPILogGenerationContent(tx *gorm.DB) error {

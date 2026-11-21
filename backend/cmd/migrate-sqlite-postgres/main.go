@@ -385,6 +385,7 @@ func migrations() []tableMigration {
 		migrateTable[model.DramaTake]("drama_takes"),
 		migrateTable[model.DramaSegment]("drama_segments"),
 		migrateTable[model.DramaJob]("drama_jobs"),
+		migrateTable[model.InteractiveFilm]("interactive_films"),
 		migrateTable[model.AuthSession]("auth_sessions"),
 		migrateTable[model.LoginLog]("login_logs"),
 		migrateTable[model.UserIdentity]("user_identities"),

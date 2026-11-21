@@ -47,6 +47,7 @@ const OPERATION_LABEL: Record<DramaSegment["request"]["operation"], string> = {
 
 type Props = {
     detail?: DramaEpisodeDetail;
+    sceneTitle?: string;
     segmentIndex?: number;
     shotId?: string;
     castById: Map<string, DramaCast>;
@@ -86,6 +87,7 @@ type Props = {
  */
 export function SegmentDialog({
     detail,
+    sceneTitle,
     segmentIndex,
     shotId,
     castById,
@@ -140,7 +142,7 @@ export function SegmentDialog({
                     <header className="drama-sd-head">
                         <div className="min-w-0">
                             <div className="drama-eyebrow">
-                                第 {detail.episode.number} 集 · 第 {segment.index + 1} / {segments.length} 段 · 镜头 {shots.length ? `${shots[0].position + 1}–${shots[shots.length - 1].position + 1}` : "—"}
+                                {sceneTitle || `第 ${detail.episode.number} 集`} · 第 {segment.index + 1} / {segments.length} 段 · 镜头 {shots.length ? `${shots[0].position + 1}–${shots[shots.length - 1].position + 1}` : "—"}
                             </div>
                             <div className="drama-sd-title">
                                 <h2>{segment.title}</h2>

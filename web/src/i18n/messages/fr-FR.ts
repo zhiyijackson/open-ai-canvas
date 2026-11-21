@@ -49,6 +49,7 @@ export const frFR: Messages = {
             switchUnavailable: "Attendez la fin de la création en cours",
             home: "Créer",
             projects: "Courts métrages",
+            interactiveFilms: "Films interactifs",
             ecommerce: "Agent e-commerce",
             canvas: "Canevas libre",
             toolboxImage: "Génération d'images",

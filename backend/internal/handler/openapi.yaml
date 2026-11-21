@@ -159,6 +159,70 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409":
           description: 该账号有未结束、等待确认、刚预留或尚未收尾的轮次，未清理任何历史
+  /interactive-films:
+    get:
+      tags: [dramas]
+      summary: 当前账号的互动影游作品库
+      responses:
+        "200": { description: 作品摘要列表 }
+    post:
+      tags: [dramas]
+      summary: 创建互动影游草稿
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InteractiveFilmDraft" }
+      responses:
+        "200": { description: 已保存的影游 }
+        "400": { $ref: "#/components/responses/Error" }
+  /interactive-films/adaptation-method:
+    get:
+      tags: [dramas]
+      summary: 获取制作台使用的内置互动影游改编技能
+      responses:
+        "200": { description: method 为技能正文 }
+  /interactive-films/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      tags: [dramas]
+      summary: 读取当前账号的影游与场次制作映射
+      responses:
+        "200": { description: 影游详情 }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [dramas]
+      summary: 按 revision 保存改编方向和剧情图
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InteractiveFilmDraft" }
+      responses:
+        "200": { description: 已更新的影游 }
+        "409": { $ref: "#/components/responses/Error" }
+  /interactive-films/{id}/produce:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    post:
+      tags: [dramas]
+      summary: 验证剧情图并制作选定场次
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, sceneIds]
+              properties:
+                revision: { type: integer, format: int64 }
+                sceneIds: { type: array, minItems: 1, items: { type: string } }
+                models: { type: object, description: 首次投产使用的短剧制作模型 }
+      responses:
+        "200": { description: 含 projectId 及场次到集映射的影游 }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /admin/system-update:
     get:
       tags: [admin]
@@ -5129,6 +5193,82 @@ components:
             themeColors: { type: string }
         projectId: { type: string }
         idempotencyKey: { type: string }
+    InteractiveFilmDraft:
+      type: object
+      required: [title]
+      properties:
+        creationKey: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$', writeOnly: true, description: 仅创建时使用。同一用户以相同标识重试时返回已有作品的当前版本。 }
+        title: { type: string, maxLength: 100 }
+        novel: { type: string, maxLength: 6000000 }
+        direction: { type: string, maxLength: 12000 }
+        revision: { type: integer, format: int64, description: 更新时必填 }
+        graph:
+          type: object
+          properties:
+            start: { type: string }
+            scenes:
+              type: array
+              maxItems: 300
+              items:
+                type: object
+                required: [id, title, script, mode, exits]
+                properties:
+                  id: { type: string }
+                  title: { type: string }
+                  script: { type: string }
+                  source: { type: string }
+                  mode: { type: string, enum: [choice, next, ending] }
+                  clue: { type: string, description: 触发本场补充回应的热点编号 }
+                  response: { type: string }
+                  media:
+                    type: object
+                    required: [kind]
+                    properties:
+                      kind: { type: string, enum: [event, clip] }
+                      resourceId: { type: string, description: 当前用户的就绪图片或视频资源。事件底图可省略 }
+                  track:
+                    type: object
+                    properties:
+                      resourceId: { type: string, description: 配轨时核对的成片版本 }
+                      durationMs: { type: integer }
+                      cues:
+                        type: array
+                        maxItems: 64
+                        items:
+                          type: object
+                          required: [id, kind, atMs]
+                          properties:
+                            id: { type: string }
+                            kind: { type: string, enum: [hotspot, choice] }
+                            atMs: { type: integer, minimum: 0 }
+                            endMs: { type: integer }
+                            x: { type: number, minimum: 0, maximum: 100 }
+                            y: { type: number, minimum: 0, maximum: 100 }
+                            label: { type: string, maxLength: 60 }
+                            feedback: { type: string, maxLength: 500 }
+                            collectionName: { type: string, maxLength: 60 }
+                            question: { type: string, maxLength: 80 }
+                            wait: { type: boolean }
+                            tail: { type: boolean }
+                            timeoutMs: { type: integer, minimum: 0, maximum: 3600000 }
+                            defaultExit: { type: string }
+                  exits:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        label: { type: string }
+                        target: { type: string }
+                        id: { type: string, description: 供限时锚点绑定的稳定出口编号 }
+                        item: { type: string, maxLength: 60 }
+                        requiresItem: { type: string, maxLength: 60 }
+                        feedback: { type: string, maxLength: 500, description: 互动事件点击后的反馈 }
+                        spot:
+                          type: object
+                          required: [x, y]
+                          properties:
+                            x: { type: number, minimum: 0, maximum: 100 }
+                            y: { type: number, minimum: 0, maximum: 100 }
     SystemUpdateSources:
       type: object
       required: [githubSource, imageSource]
