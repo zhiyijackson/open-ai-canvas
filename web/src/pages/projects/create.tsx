@@ -7,7 +7,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceErrorState, WorkspaceLoadingState } from "@/components/layout/workspace-state";
 import { DEFAULT_DRAMA_STYLE_ID, findDramaStyle } from "@/lib/drama/drama-styles";
-import { decodeNovelText } from "@/lib/canvas/canvas-document";
+import { decodeNovelText, MAX_NOVEL_FILE_BYTES } from "@/lib/canvas/canvas-document";
 import { analyzeNovel, EPISODE_GROUP_CHARS, EPISODE_SOURCE_CHARS, sourceChars, titleFromFileName, type NovelAnalysis } from "@/lib/drama/novel-parse";
 import { defaultChapterSelection, groupChapterEpisodes } from "@/lib/drama/chapter-selection";
 import { ApiError } from "@/services/api/request";
@@ -41,8 +41,6 @@ import { EpisodeDurationInput, StoryboardRules } from "./storyboard-rules";
 import { DramaStylePicker } from "./style-picker";
 import { ChapterPickList } from "./chapter-pick-list";
 import "./drama.css";
-
-const MAX_FILE_BYTES = 40 * 1024 * 1024;
 
 /** 从画布“交给短剧自动制作”带来的预填内容；canvasId 是创建后要关联的原画布（已关联项目的画布不带）。 */
 type DramaCreatePrefill = { name?: string; sourceFormat?: DramaSourceFormat; text: string; canvasId?: string };
@@ -214,7 +212,7 @@ export default function DramaCreatePage() {
             message.warning("目前支持 TXT 与 Markdown 文件");
             return;
         }
-        if (file.size > MAX_FILE_BYTES) {
+        if (file.size > MAX_NOVEL_FILE_BYTES) {
             message.warning("文件超过 40MB，请拆分后上传");
             return;
         }

@@ -18,6 +18,7 @@ import { teamIdFromPath } from "@/lib/team-query-keys";
 import { workspacePagePath, workspaceTeamId } from "@/lib/workspace-routes";
 
 const AdminPage = lazy(() => import("@/pages/admin"));
+const InteractiveFilmPage = lazy(() => import("@/pages/interactive-film"));
 const EcommerceManagementPage = lazyAdminPage(() => import("@/pages/admin/ecommerce-management-page"));
 const EcommerceAgentConfigPage = lazyAdminPage(() => import("@/pages/admin/ecommerce-agent-config-page"));
 const AnalyticsPage = lazyAdminPage(() => import("@/pages/admin/admin-route-pages").then((module) => ({ default: module.AnalyticsPage })));
@@ -269,6 +270,14 @@ const routes: RouteObject[] = [
                 ),
             },
             { path: "/projects/:projectId/*", element: <Navigate to=".." relative="path" replace /> },
+            {
+                path: "/interactive-films/:filmId?",
+                element: (
+                    <RequireAuth>
+                        <RequireFeature feature="shortDramaEnabled">{deferred(<InteractiveFilmPage />)}</RequireFeature>
+                    </RequireAuth>
+                ),
+            },
             { path: "/canvas", element: <RequireAuth>{deferred(<CanvasPage />)}</RequireAuth> },
             {
                 path: "/canvas/:id",

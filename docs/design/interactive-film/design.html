@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>互动影游制作台 · 设计评审</title>
+  <style>
+    :root { color-scheme: light dark; --paper:#f6f6f7; --panel:#fff; --ink:#1d1d20; --muted:#5b5b63; --line:#d9d9df; --link:#293e95; }
+    @media (prefers-color-scheme:dark) { :root { --paper:#18181b; --panel:#222225; --ink:#f2f2f5; --muted:#bcbcc4; --line:#404047; --link:#b6c2ff; } }
+    * { box-sizing:border-box; } body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.75 Inter,"PingFang SC","Microsoft YaHei",sans-serif; }
+    header,main,footer { max-width:1320px; margin:auto; padding-inline:clamp(16px,4vw,58px); }
+    header { padding-block:32px 20px; } header p,figcaption,.ref { color:var(--muted); }
+    h1,h2,h3,p,figure { margin:0; } h1 { font-size:clamp(30px,4vw,52px); letter-spacing:-.03em; line-height:1.3; margin:8px 0; }
+    h2 { font-size:clamp(21px,2.5vw,31px); line-height:1.4; } h3 { font-size:16px; } a { color:var(--link); text-underline-offset:4px; }
+    a:focus-visible,summary:focus-visible { outline:2px solid var(--link); outline-offset:4px; }
+    main { display:grid; grid-template-columns:150px minmax(0,1fr); gap:28px; align-items:start; }
+    nav { position:sticky; top:12px; padding:12px 0; } nav a { display:block; padding:5px 0; text-decoration:none; font-size:14px; }
+    section { margin:0 0 24px; padding:clamp(16px,2.5vw,30px); background:var(--panel); border:1px solid var(--line); border-radius:12px; scroll-margin:16px; }
+    section>p { margin:6px 0 16px; } figure { margin:14px 0; } img { display:block; width:100%; height:auto; border-radius:7px; border:1px solid var(--line); }
+    figcaption,.ref { font-size:13px; margin:6px 0; } .pair { display:grid; grid-template-columns:1fr 1fr; gap:22px; margin-top:14px; }
+    .pair>div { border-top:1px solid var(--line); padding-top:10px; } .pair p,li { font-size:15px; } ol { padding-left:1.4em; margin:8px 0; }
+    .phone { display:grid; grid-template-columns:minmax(140px,240px) 1fr; gap:24px; align-items:center; }
+    details { padding:12px 0; border-top:1px solid var(--line); } summary { cursor:pointer; font-weight:600; }
+    footer { padding-block:8px 38px; } .decision { padding:12px 16px; background:var(--paper); border-left:3px solid var(--ink); margin-top:14px; }
+    @media(max-width:780px) { main { display:block; } nav { position:static; display:flex; flex-wrap:wrap; gap:4px 14px; margin-bottom:14px; } .pair,.phone { grid-template-columns:1fr; } .phone figure { max-width:240px; } }
+    @media print { nav,footer { display:none; } main { display:block; } section { break-inside:avoid; } body { color:#161618; background:white; } }
+  </style>
+</head>
+<body>
+<header>
+  <p>影策工作区　/　产品设计评审　·　2026.11.19</p>
+  <h1>互动影游制作台</h1>
+  <p>《闭馆之后》第一章　·　从一张寄存票，到三个可以亲自走到的结局。<a href="PRD.md">配套 PRD</a></p>
+</header>
+<main>
+  <nav aria-label="评审目录">
+    <a href="#adaptation">原著与改编</a><a href="#graph">剧情与汇合</a><a href="#production">按场制作</a>
+    <a href="#track">成片互动轨</a><a href="#playtest">玩家与分析</a><a href="#mobile">小屏与恢复</a><a href="#review">审核单</a>
+  </nav>
+  <article>
+    <section id="adaptation">
+      <p class="ref">R1　编剧 / 作品库 → 新建作品</p><h2>先确认故事该怎样改</h2>
+      <p>导入小说后，左侧保留原著和处理进度，右侧并排阅读原文、修改改编方向。已有有效剧情图的作品直接回制作台。</p>
+      <figure><a href="assets/adaptation.webp"><img src="assets/adaptation.webp" alt="改编方向确认页，包含小说节选、编辑区、生成按钮和中断恢复入口"></a><figcaption>点击界面图可查看原尺寸。主操作随当前步骤变为「确认方向并生成剧情图」。</figcaption></figure>
+      <div class="pair"><div><h3>点击生成</h3><p>说明本次任务范围和计价，显示输出进度。生成后选中入口场，编剧可以立即文字走戏。</p></div><div><h3>中途停下</h3><p>保留完整场次和手工修改。示例恢复 22 场后可先保存，再续写缺口。</p></div></div>
+    </section>
+    <section id="graph">
+      <p class="ref">R2　编剧 / 编辑剧情</p><h2>让两条来路共用一场好戏</h2>
+      <figure><a href="assets/story-graph.webp"><img src="assets/story-graph.webp" alt="S02 围裙和 S03 录音机汇入 S04 问询，再通往署名、声音和暂存三个结局"></a></figure>
+      <div class="pair"><div><h3>选中 S04</h3><p>右侧列出两条来路。共同前情是林澄来找署名。开场先拍登记簿和抬头的值班员，给两路留下不同的下一个动作。</p></div><div><h3>编辑出口</h3><p>围裙路线可查验表盖，录音机路线可播放磁带。两路都能暂存遗物。校验失败会标出场次、来路与需修订的条件。</p></div></div>
+    </section>
+    <section id="production">
+      <p class="ref">R3–R4　导演 / 制作台 → 分镜</p><h2>在剧情图上选场，继续用短剧的制作工具</h2>
+      <figure><a href="assets/production.webp"><img src="assets/production.webp" alt="左侧纵向 DAG，右侧分镜页及剧情段卡片"></a></figure>
+      <div class="pair"><div><h3>进入与投产</h3><p>选场只读取剧本与已有镜头。待制场提供「开始制作本场分镜」。汇合场复用一个制作单元。</p></div><div><h3>精修与返回</h3><p>打开剧情段卡片，修改镜头动作、对白、参考素材或提示词。关闭后回到原场原段，改稿后可以对照已拍快照。</p></div></div>
+    </section>
+    <section id="track">
+      <p class="ref">R5　导演 / 制作台 → 成片</p><h2>把选择放在表演发生的那一秒</h2>
+      <figure><a href="assets/interaction-track.webp"><img src="assets/interaction-track.webp" alt="30 秒成片在 16 秒虚拟分段，轨上有 6 秒票根热点和 16 秒随身物件选择，右侧为去向设置"></a><figcaption>监视器、时间轴与属性栏指向同一个互动点。图上的「从 14 秒试演」为当前 16 秒锚点前的两秒。</figcaption></figure>
+      <ol>
+        <li>在成片上定位 <b>6 秒</b>，添加画面热点，在票根上圈出可点击区域，设为 10 秒收起。点中展示背面的日期，记下线索并原地续播。</li>
+        <li>在 <b>16 秒</b>添加物件选择，绑定「穿上围裙 → S02」「带上录音机 → S03」。时间轴自动分出前段和 14 秒余段。</li>
+        <li>默认选完立即切到物件特写。若要保留值班员的反应，选择「播完余段」。保存后从 14 秒试看一次，回编辑时播放头仍在原处。</li>
+      </ol>
+      <details><summary>替换视频或移动互动点</summary><p>重剪后锚点关联旧版本。新片只有 12 秒时，将原 16 秒选择标为越界，定位到对应事件，让导演移动或移除后再确认。输入窗口重叠时展示两个时段。</p></details>
+    </section>
+    <section id="playtest">
+      <p class="ref">R6　测试者 / 从本场试玩</p><h2>同一间值班室，两种可以采取的行动</h2>
+      <figure><a href="assets/playtest.webp"><img src="assets/playtest.webp" alt="围裙路线可翻开表盖寻找签名，录音机路线可辨认声音，两者均可选择家属暂存"></a></figure>
+      <div class="pair"><div><h3>玩家视图</h3><p>热点靠近票根，慢呼吸三次后保持静止。确认物件后进入专属反馈镜头，问询场根据携带物给出行动。声音证据同时配字幕。</p></div><div><h3>作者分析</h3><p>从 S04 选择实际来路或设置初态。查看「录音机行动隐藏，因为本轮持围裙」。退出试玩可回到有关场次或锚点。</p></div></div>
+      <p class="decision">审核时走三遍：见过票根并穿围裙 → 展签署名；错过票根并带录音机 → 口述档案；从物件选择前重试 → 家属暂存。</p>
+    </section>
+    <section id="mobile">
+      <p class="ref">R3 / R5 / R6　手机与恢复</p><h2>在小屏上也能找到原场、原段和原帧</h2>
+      <div class="phone"><figure><a href="assets/mobile.webp"><img src="assets/mobile.webp" alt="手机上的场次切换、三页签、互动属性及从本场试玩入口"></a></figure><div>
+        <h3>导航收起，监视器保留</h3><p>用「切换场次」展开 DAG 抽屉。切完收起，在当前成片下展开属性。热点相对实际画面定位，避开黑边和字幕。</p>
+        <h3>辅助与暂停</h3><p>提供文字入口、静止热点和等候模式。进入后台后冻结选择计时，返回时从暂停处继续。</p>
+        <h3>草稿与故障</h3><p>生成中断可恢复，视频加载失败可重试或转文字。发生写入冲突时保留编辑内容，取回最新版本供比较。</p>
+      </div></div>
+    </section>
+    <section id="review">
+      <h2>产品审核单</h2><p>请按本章样片确认三项。正式签认记录在 <a href="PRD.md">Markdown PRD 的第七节</a>。</p>
+      <ol><li>默认作品入口、左侧场次 DAG、右侧三页签和成片下的互动轨是否符合日常制作习惯？</li><li>片中选择默认暂停、选完立即切场，同时允许保留余段，是否符合导演的剪辑预期？</li><li>一条可错过线索、一个携带位和三个结局，是否足以验证首版要实现的玩法？</li></ol>
+    </section>
+  </article>
+</main>
+<footer><a href="#adaptation">返回原著与改编</a></footer>
+</body></html>

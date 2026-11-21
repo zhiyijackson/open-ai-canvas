@@ -50,6 +50,7 @@ export const zhCN = {
             switchUnavailable: "创作进行中，稍后可切换对话",
             home: "创作",
             projects: "短剧制作",
+            interactiveFilms: "互动影游",
             ecommerce: "电商 Agent",
             canvas: "自由画布",
             toolboxImage: "图片生成",

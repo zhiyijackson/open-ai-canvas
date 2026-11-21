@@ -3,6 +3,8 @@ package service
 import "yingce/backend/internal/app"
 
 type (
+	FilmDraftRequest               = app.FilmDraftRequest
+	FilmProductionRequest          = app.FilmProductionRequest
 	CreateDramaRequest             = app.CreateDramaRequest
 	UpdateDramaSettingsRequest     = app.UpdateDramaSettingsRequest
 	UpdateDramaShotRequest         = app.UpdateDramaShotRequest

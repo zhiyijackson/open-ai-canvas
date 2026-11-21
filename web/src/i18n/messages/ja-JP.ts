@@ -49,6 +49,7 @@ export const jaJP: Messages = {
             switchUnavailable: "作成が完了してから会話を切り替えてください",
             home: "作成",
             projects: "ショートドラマ制作",
+            interactiveFilms: "インタラクティブ映画",
             ecommerce: "EC エージェント",
             canvas: "フリーキャンバス",
             toolboxImage: "画像生成",

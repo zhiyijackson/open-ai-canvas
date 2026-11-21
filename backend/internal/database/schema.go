@@ -164,6 +164,7 @@ func Models() []any {
 		&model.Result{},
 		&model.UserFeedback{},
 		&model.DramaProduction{},
+		&model.InteractiveFilm{},
 		&model.DramaCast{},
 		&model.DramaEpisode{},
 		&model.DramaShot{},

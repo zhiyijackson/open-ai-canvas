@@ -149,6 +149,7 @@ func (r *Repository) DramaSegmentsAwaitingTail(episodeID string) ([]model.DramaS
 
 // DramaResourceReferenceKind 标记由短剧表直接持有的资源；素材删除和孤儿清理都保留这些资源。
 const DramaResourceReferenceKind = "短剧"
+const FilmResourceReferenceKind = "互动影游"
 
 // DramaResourceReferences 返回短剧制作仍在使用的资源：设定参考图、剧情段视频与尾帧、成片以及全部产物版本。
 // 这些引用不在任何 JSON 文档里，必须单独查询，否则素材库“彻底删除”或孤儿清理会删掉短剧正在用的媒体。
@@ -170,6 +171,16 @@ func (r *Repository) DramaResourceReferences(userID string, resourceIDs []string
 
 func (r *Repository) dramaResourceReferences(userID string, resourceIDs []string) ([]ResourceDirectReference, error) {
 	references := []ResourceDirectReference{}
+	// Only expand the graph's scenes; a match in the novel or dialogue is not a media reference.
+	scenes := "json_each(f.graph, '$.scenes') AS s"
+	resource := "json_extract(s.value, '$.media.resourceId')"
+	if r.db.Dialector.Name() == "postgres" {
+		scenes = "jsonb_array_elements(CASE WHEN jsonb_typeof(f.graph::jsonb->'scenes') = 'array' THEN f.graph::jsonb->'scenes' ELSE '[]'::jsonb END) AS s(value)"
+		resource = "s.value->'media'->>'resourceId'"
+	}
+	if err := r.db.Table("interactive_films AS f").Joins("CROSS JOIN "+scenes).Select("DISTINCT ? AS kind, f.id, f.title, "+resource+" AS resource_id", FilmResourceReferenceKind).Where("f.user_id = ? AND "+resource+" IN ?", userID, resourceIDs).Scan(&references).Error; err != nil {
+		return nil, err
+	}
 	projects := r.db.Model(&model.DramaProduction{}).Select("project_id").Where("user_id = ?", userID)
 	var casts []model.DramaCast
 	if err := r.db.Select("id", "name", "image_resource_id", "voice_sample_resource_id").Where("project_id IN (?) AND (image_resource_id IN ? OR voice_sample_resource_id IN ?)", projects, resourceIDs, resourceIDs).Find(&casts).Error; err != nil {

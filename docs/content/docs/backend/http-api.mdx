@@ -1183,6 +1183,24 @@ Agent 已不再注入、召回或写入下列经验条目，记忆设置页只�
 
 install 的 Base URL、协议、能力和成本全部从服务端快照读取，不信任请求体。售价 = 成本 × (1 + 加价率)，向上取整到微积分；加价率 0–1000%，最多两位小数。推广期已过返回 404。API Key 只加密存入渠道，不写日志。
 
+## 互动影游
+
+剧情图节点可带 `media`。`kind=event` 可引用就绪的图片或 GIF，也支持纯按钮。`kind=clip` 引用就绪视频。保存时校验资源归属和类型，试玩前需绑定片段。事件出口可带 `spot: {x, y}`（各为 0–100 的百分比）和 `feedback`（最多 500 字）。这两类节点沿用现有出口和携带物规则，无需送入分镜制作。
+
+`GET /api/interactive-films/adaptation-method` 提供随版本发布的内置改编技能。工作区两次文本生成分别使用该技能和对应阶段的输出要求。
+
+登录用户通过 `GET /api/interactive-films` 读取自己的作品列表，`POST /api/interactive-films` 创建草稿。详情与保存使用 `GET`、`PUT /api/interactive-films/:id`。编辑字段包括 `title`、`novel`、`direction`、`graph`；更新必须携带读取到的 `revision`，旧版本返回 409。沿用短剧功能开关。
+
+创建和更新均支持最多 600 万个 Unicode 字符的原著，改编方向最多 1.2 万个字符。草稿 JSON 请求体上限为 64 MiB。
+
+分支剧本在浏览器内解析，确认导入时使用同一创建接口保存修正后的 `novel` 和 `graph`。`graph.scenes[].track.cues[]` 的选择点可带 `question`（最多 80 个 Unicode 字符），热点可带 `collectionName`（最多 60 个）。字段均可省略。线索册优先显示收藏名，留空则显示热点名称。
+
+创建可传 `creationKey`，取值为 1 至 64 位字母、数字、下划线或短横线。导入响应丢失后，以同一账号和标识重新提交会返回原作品的当前版本。独立导入使用新的标识。
+
+场次可带 `track`，以 `resourceId` 绑定成片版本，`durationMs` 和互动点时刻均以毫秒计。每场最多 64 个互动点。热点使用实际画面的百分比坐标和半开时间区间。分支点引用本场出口，限时默认项通过出口的稳定 `id` 绑定。出口的 `requiresItem` 筛选当前携带物，`item` 写入新携带物。已发现 `clue` 指定的热点时，播放器显示 `response`。
+
+`POST /api/interactive-films/:id/produce` 接受 `revision` 与非空的 `sceneIds`。服务端检查整图，再将选中场次送入共享制作项目。重复提交相同场次和剧本会复用原集；改稿后再次投产会保留旧集并建立新版本。
+
 ## 短剧自动制作
 
 所有 `/api/dramas` 路径都需要登录 Cookie 并受 `shortDrama` 功能开关保护；对象归属在 service 中按当前用户校验，返回标准业务信封。

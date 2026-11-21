@@ -39,7 +39,7 @@ func TestShortDramaFeatureGateKeepsSharedLibraries(t *testing.T) {
 				&model.Asset{}, &model.AssetVersion{}, &model.AssetRepresentation{}, &model.CharacterVoiceBinding{},
 				&model.VoiceProfile{}, &model.StyleProfile{}, &model.Project{}, &model.ProjectAssetLink{},
 				&model.ProjectAssetFolder{}, &model.Resource{}, &model.Shot{}, &model.ShotAssetReference{},
-				&model.ProjectUnit{}, &model.CanvasProject{}); err != nil {
+				&model.ProjectUnit{}, &model.CanvasProject{}, &model.InteractiveFilm{}); err != nil {
 				t.Fatal(err)
 			}
 			for _, record := range []any{
@@ -95,6 +95,20 @@ func TestShortDramaFeatureGateKeepsSharedLibraries(t *testing.T) {
 			}
 			call(http.MethodGet, "/projects", "", "", http.StatusUnauthorized)
 			call(http.MethodGet, "/projects", "", "owner", projectWant)
+			call(http.MethodGet, "/interactive-films", "", "", http.StatusUnauthorized)
+			call(http.MethodGet, "/interactive-films", "", "owner", projectWant)
+			call(http.MethodGet, "/interactive-films/adaptation-method", "", "owner", projectWant)
+			call(http.MethodPost, "/interactive-films", `{"title":"站台"}`, "owner", projectWant)
+			if enabled {
+				// A complete UTF-8 manuscript must survive both the HTTP body limit and the database round trip.
+				novel := strings.Repeat("星", 5_999_999) + "🌙"
+				call(http.MethodPost, "/interactive-films", `{"title":"长篇","novel":"`+novel+`"}`, "owner", http.StatusOK)
+				var film model.InteractiveFilm
+				if err := db.Where("title = ?", "长篇").First(&film).Error; err != nil || film.Novel != novel {
+					t.Fatal("full-length novel was not saved intact", err)
+				}
+				call(http.MethodPut, "/interactive-films/"+film.ID, `{"title":"长篇","revision":1,"novel":"`+novel+`字"}`, "owner", http.StatusBadRequest)
+			}
 		})
 	}
 }
