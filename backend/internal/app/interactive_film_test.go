@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -12,9 +13,10 @@ func TestInteractiveFilmNodeMedia(t *testing.T) {
 	const user = "usr-drama"
 	image := fake.resource(user, "image", "image/gif")
 	video := fake.resource(user, "video", "video/mp4")
+	sticker := fake.resource(user, "image", "image/png")
 	media := &model.FilmNodeMedia{Kind: "event", ResourceID: image}
 	req := FilmDraftRequest{Title: "站台", Graph: model.FilmGraph{Start: "a", Scenes: []model.FilmScene{
-		{ID: "a", Title: "翻开票根", Script: "查看票根", Mode: "next", Media: media, Exits: []model.FilmExit{{Target: "b", Label: "翻面", Spot: &model.FilmSpot{X: 45, Y: 55}, Feedback: "末班车"}}},
+		{ID: "a", Title: "翻开票根", Script: "查看票根", Mode: "next", Media: media, Exits: []model.FilmExit{{Target: "b", Label: "翻面", Spot: &model.FilmSpot{X: 45, Y: 55, ResourceID: sticker, Appearance: "glow", Width: 20}, Feedback: "末班车"}}},
 		{ID: "b", Title: "上车", Script: "车门关闭", Mode: "ending", Media: &model.FilmNodeMedia{Kind: "clip", ResourceID: video}},
 	}}}
 	film, err := svc.SaveInteractiveFilm(user, "", req)
@@ -28,14 +30,19 @@ func TestInteractiveFilmNodeMedia(t *testing.T) {
 	if stored.Graph.Scenes[0].Exits[0].Spot.Y != 55 || stored.Graph.Scenes[0].Exits[0].Feedback != "末班车" || stored.Graph.Scenes[1].Media.ResourceID != video {
 		t.Fatal(stored.Graph)
 	}
-	refs, err := svc.repo.DramaResourceReferences(user, []string{image, video})
-	if err != nil || len(refs) != 2 {
+	refs, err := svc.repo.DramaResourceReferences(user, []string{image, video, sticker})
+	if err != nil || len(refs) != 3 {
 		t.Fatalf("node media references: %+v %v", refs, err)
 	}
 	if _, err := svc.ProduceInteractiveFilm(user, film.ID, FilmProductionRequest{Revision: film.Revision, SceneIDs: []string{"a"}}); err == nil {
 		t.Fatal("created episode for event")
 	}
 	for _, resource := range []string{video, fake.resource("other", "image", "image/png")} {
+		req.Graph.Scenes[0].Exits[0].Spot.ResourceID = resource
+		if _, err := svc.SaveInteractiveFilm(user, "", req); err == nil {
+			t.Fatal("accepted inaccessible hotspot image")
+		}
+		req.Graph.Scenes[0].Exits[0].Spot.ResourceID = sticker
 		media.ResourceID = resource
 		if _, err := svc.SaveInteractiveFilm(user, "", req); err == nil {
 			t.Fatal("accepted wrong type or owner")
@@ -147,7 +154,13 @@ func TestInteractiveFilmProduction(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	req := FilmDraftRequest{Title: "站台", Graph: model.FilmGraph{Start: "a", Scenes: []model.FilmScene{
+	settings := DramaSettings{Models: fakeDramaModels, MediaMode: DramaMediaManual}
+	settings.AspectRatio, settings.StyleName, settings.EpisodeSeconds = "16:9", "水墨", 120
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := FilmDraftRequest{Title: "站台", Setup: &model.FilmSetup{StyleID: "ink", ChapterIndexes: []int{0, 2}, Settings: encoded}, Graph: model.FilmGraph{Start: "a", Scenes: []model.FilmScene{
 		{ID: "a", Title: "候车", Script: "主角走上站台。", Mode: "next", Exits: []model.FilmExit{{Target: "b"}}},
 		{ID: "b", Title: "离站", Script: "主角登上列车。", Mode: "ending"},
 	}}}
@@ -157,7 +170,7 @@ func TestInteractiveFilmProduction(t *testing.T) {
 	}
 	produce := func(ids ...string) {
 		t.Helper()
-		f, e := svc.ProduceInteractiveFilm(user, film.ID, FilmProductionRequest{Revision: film.Revision, SceneIDs: ids, Models: fakeDramaModels})
+		f, e := svc.ProduceInteractiveFilm(user, film.ID, FilmProductionRequest{Revision: film.Revision, SceneIDs: ids})
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -166,6 +179,14 @@ func TestInteractiveFilmProduction(t *testing.T) {
 	produce("a")
 	first := film.Takes["a"]
 	project := film.ProjectID
+	controller, err := svc.repo.DramaProduction(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := parseDramaSettings(controller.SettingsJSON)
+	if actual.AspectRatio != "16:9" || actual.StyleName != "水墨" || actual.EpisodeSeconds != 120 || actual.Models.Text != fakeDramaModels.Text || controller.Stage != model.DramaStageBible || len(film.Setup.ChapterIndexes) != 2 {
+		t.Fatalf("film setup not applied at handoff: %+v, stage %s", actual, controller.Stage)
+	}
 	produce("a")
 	if film.Takes["a"] != first {
 		t.Fatal("duplicate take")
@@ -187,5 +208,17 @@ func TestInteractiveFilmProduction(t *testing.T) {
 	rows, err = svc.repo.DramaEpisodes(project)
 	if err != nil || film.ProjectID != project || len(rows) != 2 || rows[1].SourceFormat != model.DramaSourceScript || rows[1].ID != film.Takes["b"].EpisodeID {
 		t.Fatalf("handoff: %+v %v", rows, err)
+	}
+	runDramaTicks(t, svc, project, 20)
+	cast, err := svc.repo.DramaCasts(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]bool{}
+	for _, asset := range cast {
+		kinds[asset.Kind] = true
+	}
+	if !kinds["character"] || !kinds["scene"] || !kinds["prop"] {
+		t.Fatalf("expected shared drama asset extraction, got %v", kinds)
 	}
 }

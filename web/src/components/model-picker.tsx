@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { Check, ChevronDown, Coins } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, Coins } from "lucide-react";
 import { Popover } from "antd";
 import { usePopoverAnchorAlign } from "@/hooks/use-popover-anchor-align";
 
@@ -180,6 +180,10 @@ export function ModelPicker({
         setPickerOpen(true);
         focusMenuOption(event.key === "ArrowUp");
     };
+    const showGroupList = () => {
+        setActiveGroupKey(null);
+        focusMenuOption();
+    };
     const handleMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.key === "Escape") {
             event.preventDefault();
@@ -189,8 +193,7 @@ export function ModelPicker({
         }
         if (event.key === "ArrowLeft" && activeGroupKey !== null) {
             event.preventDefault();
-            setActiveGroupKey(null);
-            focusMenuOption();
+            showGroupList();
             return;
         }
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -223,6 +226,12 @@ export function ModelPicker({
                     ) : null}
                 </div>
             ) : null}
+            {activeGroupKey !== null && optionGroups.length > 1 && (
+                <button type="button" className="canvas-model-picker-back" onClick={showGroupList}>
+                    <ChevronLeft size={16} aria-hidden="true" />
+                    返回模型列表
+                </button>
+            )}
             {optionGroups.length ? (
                 activeGroupKey === null ? (
                     <div className="canvas-model-picker-brands" aria-label="选择产品模型">
@@ -794,16 +803,7 @@ function ModelAvailabilityBadge({ availability, available, showAvailability }: {
     ) : null;
     return (
         <Popover ref={popoverRef} open={open} onOpenChange={setOpen} content={content} trigger={["hover", "focus"]} placement="topRight" arrow={false}>
-            <span
-                className={`model-picker-availability is-${availability?.dataState || "unavailable"}`}
-                role="img"
-                tabIndex={0}
-                aria-label={summary}
-                title={summary}
-                onClick={(event) => event.stopPropagation()}
-                onMouseDown={(event) => event.stopPropagation()}
-                onPointerDown={(event) => event.stopPropagation()}
-            >
+            <span className={`model-picker-availability is-${availability?.dataState || "unavailable"}`} role="img" tabIndex={0} aria-label={summary} title={summary}>
                 <ModelRecentHealthTrack availability={availability} />
                 <span className="model-picker-availability-label">{hasRuns ? `${successCount}/${recentResults.length}` : label}</span>
             </span>

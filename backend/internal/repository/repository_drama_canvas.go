@@ -181,6 +181,17 @@ func (r *Repository) dramaResourceReferences(userID string, resourceIDs []string
 	if err := r.db.Table("interactive_films AS f").Joins("CROSS JOIN "+scenes).Select("DISTINCT ? AS kind, f.id, f.title, "+resource+" AS resource_id", FilmResourceReferenceKind).Where("f.user_id = ? AND "+resource+" IN ?", userID, resourceIDs).Scan(&references).Error; err != nil {
 		return nil, err
 	}
+	exits := "json_each(s.value, '$.exits') AS e"
+	sticker := "json_extract(e.value, '$.spot.resourceId')"
+	if r.db.Dialector.Name() == "postgres" {
+		exits = "jsonb_array_elements(CASE WHEN jsonb_typeof(s.value->'exits') = 'array' THEN s.value->'exits' ELSE '[]'::jsonb END) AS e(value)"
+		sticker = "e.value->'spot'->>'resourceId'"
+	}
+	var stickers []ResourceDirectReference
+	if err := r.db.Table("interactive_films AS f").Joins("CROSS JOIN "+scenes).Joins("CROSS JOIN "+exits).Select("DISTINCT ? AS kind, f.id, f.title, "+sticker+" AS resource_id", FilmResourceReferenceKind).Where("f.user_id = ? AND "+sticker+" IN ?", userID, resourceIDs).Scan(&stickers).Error; err != nil {
+		return nil, err
+	}
+	references = append(references, stickers...)
 	projects := r.db.Model(&model.DramaProduction{}).Select("project_id").Where("user_id = ?", userID)
 	var casts []model.DramaCast
 	if err := r.db.Select("id", "name", "image_resource_id", "voice_sample_resource_id").Where("project_id IN (?) AND (image_resource_id IN ? OR voice_sample_resource_id IN ?)", projects, resourceIDs, resourceIDs).Find(&casts).Error; err != nil {

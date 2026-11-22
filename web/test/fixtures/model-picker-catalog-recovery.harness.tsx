@@ -136,6 +136,16 @@ test("目录刷新失败保留缓存模型的正常选择", async () => {
     expect(reloads).toBe(0);
 });
 
+test("返回模型列表后可改选其他组，点击状态标记也能选中该行", async () => {
+    const { trigger, changes } = await mount();
+    await click("返回模型列表");
+    await click("分组B");
+    const badge = menu().querySelector<HTMLElement>('[role="option"] .model-picker-availability')!;
+    await act(async () => badge.click());
+    expect(changes).toEqual(["picker-test::image-b"]);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+});
+
 test("目录错误不影响纯个人配置和独立传入的预览目录", async () => {
     useModelCatalogStore.setState({ status: "error" });
     const personal = { ...config, channels: config.channels.map((item) => ({ ...item, scope: "user" as const })) };

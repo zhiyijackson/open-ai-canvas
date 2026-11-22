@@ -7,7 +7,7 @@ import type { FilmCue, FilmScene, InteractiveFilm } from "@/services/api/interac
 import type { DramaEpisodeRow } from "@/services/api/drama";
 import { filmTrackIssue, orderedTrack, filmRulesIssue, filmArrivals } from "@/lib/film-interactions";
 import { useResourceMediaUrl } from "@/pages/projects/drama-shared";
-import { FilmPlayer } from "./player";
+import { FilmPlayer } from "./studio-player";
 import { getInteractiveFilm } from "@/services/api/interactive-films";
 import { ApiError } from "@/services/api/request";
 
@@ -86,7 +86,7 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
     }
     function add(kind: FilmCue["kind"]) {
         monitor.current?.pause();
-        const cue: FilmCue = kind === "choice" ? { id: nanoid(), kind, atMs: head } : { id: nanoid(), kind, atMs: head, endMs: Math.min(head + 3000, duration), x: 50, y: 50, label: "查看线索", feedback: "" };
+        const cue: FilmCue = kind === "choice" ? { id: nanoid(), kind, atMs: head } : { id: nanoid(), kind, atMs: head, endMs: Math.min(head + 3000, duration), x: 50, y: 50, label: kind === "caption" ? "画内对白" : "查看线索", feedback: "" };
         setCues([...cues, cue]);
         setSelected(cue.id);
         setDirty(true);
@@ -228,6 +228,13 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                                     onTimeUpdate={(event) => setHead(Math.round(event.currentTarget.currentTime * 1000))}
                                 />
                             )}
+                            {track.cues
+                                .filter((cue) => cue.kind === "caption" && head >= cue.atMs && head < cue.endMs!)
+                                .map((cue) => (
+                                    <p className="film-screen-caption" key={cue.id}>
+                                        {cue.label}
+                                    </p>
+                                ))}
                             {active?.kind === "hotspot" && (
                                 <span className="film-cue-marker" style={{ left: (active.x ?? 0) + "%", top: (active.y ?? 0) + "%" }}>
                                     {active.label}
@@ -274,6 +281,9 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                             ))}
                         </div>
                         <div className="film-actions">
+                            <Button disabled={!duration || cues.length >= 64 || head >= duration} onClick={() => add("caption")}>
+                                ＋ 画内对白
+                            </Button>
                             <Button disabled={!duration || cues.length >= 64 || head >= duration} onClick={() => add("hotspot")}>
                                 ＋ 画面热点
                             </Button>
@@ -286,7 +296,15 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                         <aside className="film-rule-inspector">
                             <Seconds label="触发时刻" value={active.atMs} onChange={(atMs) => patch({ atMs })} />
                             <Button onClick={() => patch({ atMs: head })}>移到播放头</Button>
-                            {active.kind === "hotspot" ? (
+                            {active.kind === "caption" ? (
+                                <>
+                                    <Seconds label="收起时刻" value={active.endMs ?? active.atMs} onChange={(endMs) => patch({ endMs })} />
+                                    <label>
+                                        画内对白
+                                        <Input.TextArea maxLength={500} value={active.label} onChange={(event) => patch({ label: event.target.value })} />
+                                    </label>
+                                </>
+                            ) : active.kind === "hotspot" ? (
                                 <>
                                     <Seconds label="收起时刻" value={active.endMs ?? active.atMs} onChange={(endMs) => patch({ endMs })} />
                                     <label>

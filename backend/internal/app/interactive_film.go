@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
@@ -17,12 +18,13 @@ import (
 )
 
 type FilmDraftRequest struct {
-	CreationKey string          `json:"creationKey"`
-	Title       string          `json:"title"`
-	Novel       string          `json:"novel"`
-	Direction   string          `json:"direction"`
-	Graph       model.FilmGraph `json:"graph"`
-	Revision    int64           `json:"revision"`
+	Setup       *model.FilmSetup `json:"setup"`
+	CreationKey string           `json:"creationKey"`
+	Title       string           `json:"title"`
+	Novel       string           `json:"novel"`
+	Direction   string           `json:"direction"`
+	Graph       model.FilmGraph  `json:"graph"`
+	Revision    int64            `json:"revision"`
 }
 type FilmProductionRequest struct {
 	Models   DramaModels `json:"models"`
@@ -94,6 +96,12 @@ func (s *Service) SaveInteractiveFilm(userID, id string, req FilmDraftRequest) (
 		}
 		ids[scene.ID] = true
 		if media := scene.Media; media != nil {
+			if media.Presentation != "" && (media.Kind != "event" || (media.Presentation != "text" && media.Presentation != "spots")) {
+				return nil, BadAuthRequest("事件呈现方式无效")
+			}
+			if media.AdvanceMs < 0 || media.AdvanceMs > 3600000 {
+				return nil, BadAuthRequest("自动继续时间需在一小时内")
+			}
 			if media.Kind != "event" && media.Kind != "clip" {
 				return nil, BadAuthRequest("未知的节点类型")
 			}
@@ -123,6 +131,23 @@ func (s *Service) SaveInteractiveFilm(userID, id string, req FilmDraftRequest) (
 			if p := exit.Spot; p != nil && (p.X < 0 || p.X > 100 || p.Y < 0 || p.Y > 100) {
 				return nil, BadAuthRequest("点击位置应在画面内")
 			}
+			if p := exit.Spot; p != nil {
+				if p.Width < 0 || p.Width > 100 || p.Height < 0 || p.Height > 100 || (p.Appearance != "" && p.Appearance != "static" && p.Appearance != "glow") {
+					return nil, BadAuthRequest("热点大小或外观无效")
+				}
+				if p.ResourceID != "" {
+					resource, err := s.repo.ResourceForUser(userID, p.ResourceID)
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						return nil, BadAuthRequest("热点贴图不可用")
+					}
+					if err != nil {
+						return nil, err
+					}
+					if resource.Status != model.ResourceStatusReady || resource.Kind != "image" {
+						return nil, BadAuthRequest("热点贴图需要已就绪的图片或 GIF")
+					}
+				}
+			}
 			if utf8.RuneCountInString(exit.Feedback) > 500 {
 				return nil, BadAuthRequest("点击反馈最多 500 字")
 			}
@@ -135,7 +160,11 @@ func (s *Service) SaveInteractiveFilm(userID, id string, req FilmDraftRequest) (
 				if utf8.RuneCountInString(cue.Question) > 80 || utf8.RuneCountInString(cue.CollectionName) > 60 {
 					return nil, BadAuthRequest("选择点问题最多 80 字，线索名称最多 60 字")
 				}
-				if len(cue.ID) > 128 || utf8.RuneCountInString(cue.Label) > 60 || utf8.RuneCountInString(cue.Feedback) > 500 {
+				labelLimit := 60
+				if cue.Kind == "caption" {
+					labelLimit = 500
+				}
+				if len(cue.ID) > 128 || utf8.RuneCountInString(cue.Label) > labelLimit || utf8.RuneCountInString(cue.Feedback) > 500 {
 					return nil, BadAuthRequest("互动点编号或文案超过上限")
 				}
 			}
@@ -153,6 +182,21 @@ func (s *Service) SaveInteractiveFilm(userID, id string, req FilmDraftRequest) (
 		}
 	}
 	film.Title, film.Novel, film.Direction, film.Graph = req.Title, req.Novel, req.Direction, req.Graph
+	if setup := req.Setup; setup != nil {
+		if len(setup.Settings) > 128*1024 || len(setup.StyleID) > 512 || len(setup.ChapterIndexes) > dramaMaxChapters {
+			return nil, BadAuthRequest("制作设置或选段超过上限")
+		}
+		var settings DramaSettings
+		if len(setup.Settings) > 0 && json.Unmarshal(setup.Settings, &settings) != nil {
+			return nil, BadAuthRequest("制作设置格式无效")
+		}
+		for i, index := range setup.ChapterIndexes {
+			if index < 0 || (i > 0 && index <= setup.ChapterIndexes[i-1]) {
+				return nil, BadAuthRequest("剧情段必须按原文顺序选择")
+			}
+		}
+		film.Setup = setup
+	}
 	if film.Graph.Scenes == nil {
 		film.Graph.Scenes = []model.FilmScene{}
 	}
@@ -240,7 +284,16 @@ func (s *Service) ProduceInteractiveFilm(userID, id string, req FilmProductionRe
 			chapters = append(chapters, DramaChapterInput{Title: scene.Title, Text: scene.Script})
 		}
 		name := truncateRunes(film.Title, 56) + " · 影游 " + film.ID[len(film.ID)-8:]
-		creation, err = s.prepareDramaCreation(userID, newID(), CreateDramaRequest{Name: name, Chapters: chapters, Start: true, SourceFormat: model.DramaSourceScript, Settings: DramaSettings{Models: req.Models}})
+		var settings DramaSettings
+		if film.Setup != nil && len(film.Setup.Settings) != 0 {
+			if err := json.Unmarshal(film.Setup.Settings, &settings); err != nil {
+				return nil, BadAuthRequest("无法读取影游制作设置")
+			}
+		}
+		if req.Models != (DramaModels{}) {
+			settings.Models = req.Models
+		}
+		creation, err = s.prepareDramaCreation(userID, newID(), CreateDramaRequest{Name: name, Chapters: chapters, Start: true, SourceFormat: model.DramaSourceScript, Settings: settings})
 		if err != nil {
 			return nil, err
 		}

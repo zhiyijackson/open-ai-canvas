@@ -47,7 +47,10 @@ export function filmTrackIssue(scene: FilmScene, track = scene.track, durationMs
         ids.add(cue.id);
         if (!Number.isInteger(cue.atMs) || cue.atMs < 0 || cue.atMs >= durationMs) return "互动点超出成片时长";
         if (cue.atMs < lastEnd) return "互动窗口重叠";
-        if (cue.kind === "hotspot") {
+        if (cue.kind === "caption") {
+            if (!cue.label?.trim() || cue.label.length > 500 || !Number.isInteger(cue.endMs) || cue.endMs! <= cue.atMs || cue.endMs! > durationMs) return "请检查画内对白和收起时刻";
+            lastEnd = cue.endMs!;
+        } else if (cue.kind === "hotspot") {
             if (!cue.label?.trim() || !Number.isInteger(cue.endMs) || cue.endMs! <= cue.atMs || cue.endMs! > durationMs) return "请检查热点名称和结束时间";
             if ([cue.x ?? 0, cue.y ?? 0].some((value) => !Number.isFinite(value) || value < 0 || value > 100)) return "热点位置超出画面";
             lastEnd = cue.endMs!;

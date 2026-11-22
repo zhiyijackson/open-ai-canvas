@@ -236,20 +236,21 @@ export function srtToVtt(srt: string) {
 }
 
 /** 解析资源的授权播放地址；视频优先使用浏览器兼容的播放副本。 */
+export function resolveDramaMedia(resourceId: string, variant: ResourceAccessVariant) {
+    return getResourceAccess(`resource:${resourceId}`, "display", variant)
+        .catch(() => getResourceAccess(`resource:${resourceId}`, "display", "original"))
+        .then((access) => resolveResourceAccessURL(access.url))
+        .catch(() => resourceUrl(resourceId));
+}
 export function useResourceMediaUrl(resourceId: string | undefined, variant: ResourceAccessVariant = "original") {
     const [url, setUrl] = useState("");
     useEffect(() => {
         setUrl("");
         if (!resourceId) return;
         let active = true;
-        void getResourceAccess(`resource:${resourceId}`, "display", variant)
-            .catch(() => getResourceAccess(`resource:${resourceId}`, "display", "original"))
-            .then((access) => {
-                if (active) setUrl(resolveResourceAccessURL(access.url));
-            })
-            .catch(() => {
-                if (active) setUrl(resourceUrl(resourceId));
-            });
+        void resolveDramaMedia(resourceId, variant).then((url) => {
+            if (active) setUrl(url);
+        });
         return () => {
             active = false;
         };

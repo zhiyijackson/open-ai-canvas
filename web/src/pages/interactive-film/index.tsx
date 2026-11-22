@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, App, Button, Input, Segmented } from "antd";
 import { BranchImport } from "./branch-import";
 import { ArrowLeft, FileText, FileUp, GitBranch, Play, Plus } from "lucide-react";
@@ -6,7 +6,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker, useLinkClickHandler, useNavigate, useParams, useSearchParams } from "react-router";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { uploadResourceFile } from "@/services/api/resources";
-import { getDrama, type DramaModelChoice } from "@/services/api/drama";
+import { getDrama } from "@/services/api/drama";
+import { analyzeNovel } from "@/lib/drama/novel-parse";
+import { DEFAULT_SELECTED_CHAPTERS, defaultChapterSelection } from "@/lib/drama/chapter-selection";
+import { ChapterPickList } from "@/pages/projects/chapter-pick-list";
+import { FilmSetupEditor, initialFilmSetup } from "./film-setup";
 import { ApiError } from "@/services/api/request";
 import { getInteractiveFilm, listInteractiveFilms, saveInteractiveFilm, type FilmDraft, type FilmScene, type InteractiveFilm } from "@/services/api/interactive-films";
 import { appendFilmScenes, filmGraphIssue, filmNovelFits, missingFilmScenes, parseFilmGraph, recoverFilmGraph } from "@/lib/interactive-film";
@@ -22,11 +26,11 @@ import { WorkspaceLoadingState, WorkspaceErrorState, WorkspaceState } from "@/co
 import { RelativeTime } from "@/components/ui/product/relative-time";
 import { FilmProduction } from "./production";
 import { GraphEditor } from "./graph-editor";
-import { FilmPlayer } from "./player";
+import { FilmPlayer } from "./studio-player";
 import { FilmSample } from "./sample";
 import "./studio.css";
 
-const blank: FilmDraft = { title: "", novel: "", direction: "", graph: { start: "", scenes: [] }, revision: 0 };
+const blank: FilmDraft = { title: "", novel: "", direction: "", graph: { start: "", scenes: [] }, revision: 0, setup: initialFilmSetup };
 const base = "/interactive-films";
 const newFilmPath = base + "/new";
 export default function InteractiveFilmPage() {
@@ -157,14 +161,31 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
         [error, setError] = useState("");
     const [outputLength, setOutputLength] = useState(0);
     const [generationError, setGenerationError] = useState("");
-    const [modelChoice, setModelChoice] = useState<DramaModelChoice>();
+    const setup = draft.setup || initialFilmSetup;
+    const [previewIndex, setPreviewIndex] = useState(0);
+    const hasSelection = Array.isArray(setup.chapterIndexes);
+    const analysis = useMemo(() => (hasSelection ? analyzeNovel(draft.novel, { keepShortChapters: true }) : undefined), [hasSelection, draft.novel]);
+    const selection = useMemo(() => new Set(setup.chapterIndexes), [setup.chapterIndexes]);
+    const canAdaptSource = hasSelection ? selection.size > 0 : !!draft.novel.trim();
+    const chapterItems = useMemo(() => analysis?.chapters.map((chapter, index) => ({ key: String(index), title: chapter.title, words: chapter.words })) || [], [analysis]);
+    function splitNovel() {
+        const result = analyzeNovel(draft.novel, { keepShortChapters: true });
+        if (!result.chapters.length) {
+            setGenerationError("未识别到可改编正文，请在原著中补充故事内容。");
+            return;
+        }
+        const indexes = defaultChapterSelection(result.chapters.length);
+        setPreviewIndex(0);
+        edit({ setup: { ...setup, chapterIndexes: [...indexes] } });
+        return { chapters: result.chapters, indexes };
+    }
 
     const active = useRef<AbortController | null>(null),
         fileInput = useRef<HTMLInputElement>(null);
     useEffect(() => () => active.current?.abort(), []);
     const catalog = useDramaModelCatalog(),
         config = useEffectiveConfig();
-    const choice = modelChoice || catalog.data?.defaults.text;
+    const choice = setup.settings?.models?.text || catalog.data?.defaults.text;
 
     const issue = filmGraphIssue(draft.graph);
     const canContinueGraph = missingFilmScenes(draft.graph).length > 0;
@@ -175,14 +196,32 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
         setError("");
         setGenerationError("");
     }
-    async function uploadNodeMedia(scene: FilmScene, file: File) {
+    async function uploadNodeMedia(scene: FilmScene, file: File, exitIndex?: number) {
         const kind = scene.media?.kind;
         if (!kind || uploadingNodes.includes(scene.id)) return;
+        const exitId = exitIndex === undefined ? undefined : scene.exits[exitIndex]?.id || crypto.randomUUID();
+        if (exitId && !scene.exits[exitIndex!]?.id)
+            setDraft((current) => ({
+                ...current,
+                graph: { ...current.graph, scenes: current.graph.scenes.map((node) => (node.id === scene.id ? { ...node, exits: node.exits.map((edge, i) => (i === exitIndex ? { ...edge, id: exitId } : edge)) } : node)) },
+            }));
         setUploadingNodes((ids) => [...ids, scene.id]);
         setError("");
         try {
             const resource = await uploadResourceFile(file, kind === "clip" ? "video" : "image");
-            setDraft((current) => ({ ...current, graph: { ...current.graph, scenes: current.graph.scenes.map((node) => (node.id === scene.id && node.media?.kind === kind ? { ...node, media: { kind, resourceId: resource.id } } : node)) } }));
+            setDraft((current) => ({
+                ...current,
+                graph: {
+                    ...current.graph,
+                    scenes: current.graph.scenes.map((node) =>
+                        node.id !== scene.id || node.media?.kind !== kind
+                            ? node
+                            : exitId
+                              ? { ...node, exits: node.exits.map((edge) => (edge.id === exitId && edge.spot ? { ...edge, spot: { ...edge.spot, resourceId: resource.id } } : edge)) }
+                              : { ...node, media: { ...node.media, kind, resourceId: resource.id } },
+                    ),
+                },
+            }));
             setDirty(true);
         } catch (cause) {
             setError(`「${scene.title}」素材上传失败：${cause instanceof Error ? cause.message : "请重试"}`);
@@ -195,7 +234,7 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
             setError("单部原著最多 600 万字");
             return;
         }
-        edit({ novel, title: draft.title || (fileName || "").replace(/\.txt$/i, "").slice(0, 100) });
+        edit({ novel, setup: { ...setup, chapterIndexes: undefined }, title: draft.title || (fileName || "").replace(/\.txt$/i, "").slice(0, 100) });
     }
     async function execute(label: string, fn: (signal: AbortSignal) => Promise<void>) {
         if (active.current) return false;
@@ -250,10 +289,17 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
             let output = "";
             const existing = extend ? draft.graph : undefined;
             const model = dramaChoiceToModel(config, "text", choice);
+            const range = analysis ? { chapters: analysis.chapters, indexes: selection } : splitNovel();
+            if (!range) return;
+            const selectedSource = range.chapters
+                .filter((_, index) => range.indexes.has(index))
+                .map((chapter) => `${chapter.title}\n${chapter.text}`)
+                .join("\n\n");
+            if (!selectedSource) throw new Error("请先拆分原著并选择要改编的剧情段");
             try {
                 output = await adaptFilm(
                     stage,
-                    draft.novel,
+                    selectedSource,
                     draft.direction,
                     config,
                     model,
@@ -410,67 +456,97 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
                                 </section>
                             )}
                             <fieldset className="film-workspace" disabled={!!busy}>
-                                <section className="drama-scriptv-brief film-panel">
-                                    <div className="drama-section-title">
-                                        <h2>
-                                            <FileText className="size-4" />
-                                            小说改编
-                                        </h2>
-                                    </div>
-                                    <label>
-                                        作品名称
-                                        <Input value={draft.title} maxLength={100} onChange={(e) => edit({ title: e.target.value })} />
-                                    </label>
-                                    <div className="film-bar">
-                                        <strong>原著</strong>
-                                        <Button size="small" icon={<FileUp className="size-3.5" />} onClick={() => fileInput.current?.click()}>
-                                            上传 TXT
+                                <div className="film-right">
+                                    <section className="drama-scriptv-brief film-panel">
+                                        <div className="drama-section-title">
+                                            <h2>
+                                                <FileText className="size-4" />
+                                                原著分段
+                                            </h2>
+                                        </div>
+                                        <label>
+                                            作品名称
+                                            <Input value={draft.title} maxLength={100} onChange={(e) => edit({ title: e.target.value })} />
+                                        </label>
+                                        <div className="film-bar">
+                                            <strong>原著</strong>
+                                            <Button size="small" icon={<FileUp className="size-3.5" />} onClick={() => fileInput.current?.click()}>
+                                                上传 TXT
+                                            </Button>
+                                            <input
+                                                ref={fileInput}
+                                                type="file"
+                                                hidden
+                                                accept=".txt,text/plain"
+                                                onChange={(e) => {
+                                                    const file = e.target.files?.[0];
+                                                    e.target.value = "";
+                                                    if (!file) return;
+                                                    void execute("upload", async (signal) => {
+                                                        if (file.size > MAX_NOVEL_FILE_BYTES) throw new Error("TXT 文件超过 40 MB");
+                                                        const novel = decodeNovelText(await file.arrayBuffer());
+                                                        if (!signal.aborted) editNovel(novel, file.name);
+                                                    });
+                                                }}
+                                            />
+                                        </div>
+                                        <Input.TextArea aria-label="小说原文" aria-describedby="film-novel-limit" placeholder="粘贴小说，或上传 TXT" rows={6} value={draft.novel} onChange={(e) => editNovel(e.target.value)} />
+                                        <small id="film-novel-limit">原著最多 600 万字，TXT 最大 40 MB。只将选中的章节交给改编模型。</small>
+                                        {!analysis && (
+                                            <Button disabled={!draft.novel.trim()} onClick={splitNovel}>
+                                                识别章节与剧情段
+                                            </Button>
+                                        )}
+                                        {analysis && (
+                                            <>
+                                                <ChapterPickList
+                                                    items={chapterItems}
+                                                    selected={selection}
+                                                    onChange={(next) => edit({ setup: { ...setup, chapterIndexes: [...next].sort((a, b) => a - b) } })}
+                                                    previewIndex={previewIndex}
+                                                    onPreview={setPreviewIndex}
+                                                />
+                                                <details>
+                                                    <summary>原文预览 · {chapterItems[previewIndex]?.title}</summary>
+                                                    <p className="film-script">{analysis.chapters[previewIndex]?.text.slice(0, 6000)}</p>
+                                                </details>
+                                            </>
+                                        )}
+                                    </section>
+                                    <section className="drama-scriptv-brief film-panel">
+                                        <div className="drama-section-title">
+                                            <h2>剧情拆解与改编</h2>
+                                            {!saved?.projectId && <FilmSetupEditor value={setup} onChange={(setup) => edit({ setup })} />}
+                                        </div>
+                                        <label>
+                                            改编模型
+                                            <DramaModelPicker capability="text" value={choice} onChange={(text) => edit({ setup: { ...setup, settings: { ...setup.settings, models: { ...setup.settings?.models, text } } } })} />
+                                        </label>
+                                        <Button loading={busy === "direction"} disabled={!canAdaptSource} onClick={() => generate("direction")}>
+                                            按剧情拆解选段
                                         </Button>
-                                        <input
-                                            ref={fileInput}
-                                            type="file"
-                                            hidden
-                                            accept=".txt,text/plain"
-                                            onChange={(e) => {
-                                                const file = e.target.files?.[0];
-                                                e.target.value = "";
-                                                if (!file) return;
-                                                void execute("upload", async (signal) => {
-                                                    if (file.size > MAX_NOVEL_FILE_BYTES) throw new Error("TXT 文件超过 40 MB");
-                                                    const novel = decodeNovelText(await file.arrayBuffer());
-                                                    if (!signal.aborted) editNovel(novel, file.name);
-                                                });
-                                            }}
-                                        />
-                                    </div>
-                                    <Input.TextArea aria-label="小说原文" aria-describedby="film-novel-limit" placeholder="粘贴小说，或上传 TXT" rows={6} value={draft.novel} onChange={(e) => editNovel(e.target.value)} />
-                                    <small id="film-novel-limit">原著最多 600 万字，TXT 最大 40 MB。整本改编受所选文本模型的输入长度限制。</small>
-                                    <label>
-                                        改编模型
-                                        <DramaModelPicker capability="text" value={choice} onChange={setModelChoice} />
-                                    </label>
-                                    <Button loading={busy === "direction"} disabled={!draft.novel.trim()} onClick={() => generate("direction")}>
-                                        生成改编方向
-                                    </Button>
-                                    <label>
-                                        改编方向
-                                        <Input.TextArea placeholder="玩家扮演谁？哪些决定交给观众？" autoSize={{ minRows: 4, maxRows: 12 }} value={draft.direction} onChange={(e) => edit({ direction: e.target.value })} />
-                                    </label>
-                                    <Button type="primary" loading={busy === "graph"} disabled={hasUploads || !draft.direction.trim() || !draft.novel.trim()} onClick={() => requestGraph(canContinueGraph)}>
-                                        {canContinueGraph ? "续写缺失场次" : draft.graph.scenes.length ? "按方向重新生成剧情图" : "确认方向并生成剧情图"}
-                                    </Button>
-                                    {canContinueGraph && (
-                                        <Button disabled={!!busy || hasUploads || !draft.direction.trim() || !draft.novel.trim()} onClick={() => requestGraph()}>
-                                            按方向重新生成剧情图
+                                        <label>
+                                            分段剧情与改编方向
+                                            <Input.TextArea placeholder="玩家扮演谁？哪些决定交给观众？" autoSize={{ minRows: 4, maxRows: 12 }} value={draft.direction} onChange={(e) => edit({ direction: e.target.value })} />
+                                        </label>
+                                        <Button type="primary" loading={busy === "graph"} disabled={hasUploads || !draft.direction.trim() || !canAdaptSource} onClick={() => requestGraph(canContinueGraph)}>
+                                            {canContinueGraph ? "续写缺失场次" : draft.graph.scenes.length ? "按方向重新生成剧情图" : "确认方向并生成剧情图"}
                                         </Button>
-                                    )}
-                                    {(busy === "direction" || busy === "graph") && (
-                                        <p role="status">
-                                            {busy === "direction" ? "正在生成改编方向" : "正在生成剧情图"} · {outputLength ? `已收到 ${outputLength.toLocaleString()} 个字符` : "等待模型输出"}
-                                        </p>
-                                    )}
-                                    {generationError && <Alert type="warning" showIcon title={generationError} />}
-                                </section>
+                                        {canContinueGraph && (
+                                            <Button disabled={!!busy || hasUploads || !draft.direction.trim() || !canAdaptSource} onClick={() => requestGraph()}>
+                                                按方向重新生成剧情图
+                                            </Button>
+                                        )}
+                                        {!hasSelection && <small>可直接生成，系统会自动识别章节，默认最多选前 {DEFAULT_SELECTED_CHAPTERS} 章。也可先识别并自行选章。</small>}
+                                        {hasSelection && !selection.size && <small role="status">请在上方勾选至少一个剧情段。</small>}
+                                        {(busy === "direction" || busy === "graph") && (
+                                            <p role="status">
+                                                {busy === "direction" ? "正在生成改编方向" : "正在生成剧情图"} · {outputLength ? `已收到 ${outputLength.toLocaleString()} 个字符` : "等待模型输出"}
+                                            </p>
+                                        )}
+                                        {generationError && <Alert type="warning" showIcon title={generationError} />}
+                                    </section>
+                                </div>
                                 <div className="film-right">
                                     <GraphEditor
                                         graph={draft.graph}

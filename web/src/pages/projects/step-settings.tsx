@@ -57,6 +57,7 @@ function OverridePicker({ capability, value, fallback, onChange }: { capability:
 
 /** 文字步骤：资产提取、分镜拆分、视频提示词各自的文本模型与写作技能。 */
 export function DramaTextSteps({
+    showPlan = true,
     models,
     onModelsChange,
     skills,
@@ -64,6 +65,7 @@ export function DramaTextSteps({
     textThinking,
     onThinkingChange,
 }: {
+    showPlan?: boolean;
     models?: Partial<DramaModels>;
     onModelsChange: (patch: Partial<DramaModels>) => void;
     skills: DramaStepSkills;
@@ -80,26 +82,28 @@ export function DramaTextSteps({
     }, [canUseSkills, hydrated, skills, onSkillChange]);
     return (
         <div className="drama-steps" role="list" aria-label="文字步骤">
-            <div className="drama-step-row" role="listitem">
-                <div className="drama-step-label">
-                    <strong>分集规划</strong>
-                    <small>小说自动分集时把章节组织为连续剧集</small>
-                </div>
-                <div className="drama-step-field">
-                    <span className="drama-step-caption">文本模型</span>
-                    <small className="drama-step-note">跟随制作模型{models?.text?.label ? ` · ${models.text.label}` : ""}</small>
-                </div>
-                {canUseSkills && (
-                    <div className="drama-step-field">
-                        <span className="drama-step-caption">技能</span>
-                        <small className="drama-step-note">系统内置分集规则</small>
+            {showPlan && (
+                <div className="drama-step-row" role="listitem">
+                    <div className="drama-step-label">
+                        <strong>分集规划</strong>
+                        <small>小说自动分集时把章节组织为连续剧集</small>
                     </div>
-                )}
-                <div className="drama-step-field">
-                    <span className="drama-step-caption">思考等级</span>
-                    <Select aria-label="分集规划思考等级" value={textThinking.plan || "auto"} options={THINKING_REQUEST_OPTIONS} onChange={(value) => onThinkingChange("plan", value)} />
+                    <div className="drama-step-field">
+                        <span className="drama-step-caption">文本模型</span>
+                        <small className="drama-step-note">跟随制作模型{models?.text?.label ? ` · ${models.text.label}` : ""}</small>
+                    </div>
+                    {canUseSkills && (
+                        <div className="drama-step-field">
+                            <span className="drama-step-caption">技能</span>
+                            <small className="drama-step-note">系统内置分集规则</small>
+                        </div>
+                    )}
+                    <div className="drama-step-field">
+                        <span className="drama-step-caption">思考等级</span>
+                        <Select aria-label="分集规划思考等级" value={textThinking.plan || "auto"} options={THINKING_REQUEST_OPTIONS} onChange={(value) => onThinkingChange("plan", value)} />
+                    </div>
                 </div>
-            </div>
+            )}
             {TEXT_STEPS.map((item) => (
                 <div key={item.step} className="drama-step-row" role="listitem">
                     <div className="drama-step-label">

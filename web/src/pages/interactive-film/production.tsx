@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { FilmAudit } from "./audit";
+import { ExportDialog } from "./export-dialog";
 import { App, Button, Dropdown, Select } from "antd";
 import { ArrowLeft, Clapperboard, ClipboardCheck, GitBranch, Pencil, Play } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -51,7 +52,7 @@ export function FilmProduction({ film, owner }: { film: InteractiveFilm; owner: 
         setParams({ scene: id, ...(tab === "board" ? {} : { tab }) });
     }
     const produce = useMutation({
-        mutationFn: (ids: string[]) => produceFilmScenes(film.id, film.revision, ids, projectId ? undefined : { ...catalog.data?.defaults, ...choices }),
+        mutationFn: (ids: string[]) => produceFilmScenes(film.id, film.revision, ids, projectId || film.setup?.settings ? undefined : { ...catalog.data?.defaults, ...choices }),
         onSuccess: async (updated) => {
             cache.setQueryData(["interactive-film", owner, film.id], updated);
             await cache.invalidateQueries({ queryKey: dramaKeys.summary(updated.projectId) });
@@ -122,6 +123,7 @@ export function FilmProduction({ film, owner }: { film: InteractiveFilm; owner: 
                 互动试玩
             </Button>
             {sceneActions}
+            <ExportDialog film={film} episodes={summaryQuery.data?.episodes || []} />
         </>
     );
     function rail(episodes: DramaEpisodeRow[], showProduction: () => void) {
@@ -203,7 +205,8 @@ export function FilmProduction({ film, owner }: { film: InteractiveFilm; owner: 
                         </div>
                     )}
                 </section>
-                {!projectId && (
+                {!projectId && film.setup?.settings && <Link to={`${path}?mode=edit&scene=${encodeURIComponent(scene.id)}`}>编辑制作设置 · {film.setup.settings.styleName || "作品画风"}</Link>}
+                {!projectId && !film.setup?.settings && (
                     <details className="drama-compose-models film-models">
                         <summary>制作模型</summary>
                         {(["text", "image", "video"] as const).map((cap, i) => (

@@ -3,7 +3,8 @@ import { getFilmAdaptationMethod, type FilmGraph } from "@/services/api/interact
 import { missingFilmScenes } from "@/lib/interactive-film";
 import type { AiConfig } from "@/stores/use-config-store";
 
-const brief = "你是互动影视编剧。阅读完整原著，将文风、人物动机、不能改动的事件、玩家视角、可选择的决定与各结局方向写成一页中文改编提案。说明预计场次数与单次观看时长。保留原著主线，分支须有能拍出来的具体后果。";
+const brief =
+    "你是互动影视编剧。按提供的原著选段顺序，以人物目标、冲突或时空变化为界拆解剧情。逐段写出标题、原文章节依据、出场角色、场景、关键道具、起因、转折和结果。标明观众可介入的决定、不同后果与可能汇合的位置。最后概述玩家视角、结局方向与预计场次数。保留原著的因果和人物动机。";
 const script =
     '你是互动影视编剧。根据原著与作者确认的改编方向逐场撰写可拍摄的动作、对白与情境。给每场写原著依据或注明改编新增。设计有后果的选择、多条路线汇合和不同结局，汇合场只使用所有来路共同成立的事实。按提案控制规模。只输出合法 JSON，形状 {"start":"s1","scenes":[{"id":"s1","title":"场名","source":"出处","script":"本场完整剧本","mode":"choice","exits":[{"label":"选项","target":"s2"}]}]}。场次编号为唯一英数字或下划线，标题最多60字。choice 至少两个具名出口，next 恰好一个出口且 label 为空串，ending 的 exits 为空数组。全部场次从入口可达，无回环无断边。';
 

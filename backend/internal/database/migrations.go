@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 110
+const CurrentSchemaVersion int64 = 112
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -400,6 +400,12 @@ var schemaMigrations = []migration{
 	}},
 	{version: 111, name: "interactive_films", checksum: "sha256:interactive-films-v110", apply: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.InteractiveFilm{})
+	}},
+	{version: 112, name: "interactive_film_setup", checksum: "sha256:interactive-film-setup-v111", apply: func(tx *gorm.DB) error {
+		if tx.Migrator().HasColumn(&model.InteractiveFilm{}, "Setup") {
+			return nil
+		}
+		return tx.Migrator().AddColumn(&model.InteractiveFilm{}, "Setup")
 	}},
 }
 
@@ -1270,6 +1276,22 @@ func migrateSchemaV56(tx *gorm.DB) error {
 	return nil
 }
 
+// The games branch used slots 110 and 111 before main released its own 110.
+// Move the matching ledger rows in reverse order within the migration transaction.
+func relocateFilmMigrations(tx *gorm.DB) error {
+	var count int64
+	film := tx.Model(&schemaMigration{}).Where("version = ? AND name = ? AND checksum = ?", 110, "interactive_films", "sha256:interactive-films-v110")
+	if err := film.Session(&gorm.Session{}).Count(&count).Error; err != nil || count == 0 {
+		return err
+	}
+	if err := tx.Model(&schemaMigration{}).
+		Where("version = ? AND name = ? AND checksum = ?", 111, "interactive_film_setup", "sha256:interactive-film-setup-v111").
+		UpdateColumn("version", 112).Error; err != nil {
+		return err
+	}
+	return film.UpdateColumn("version", 111).Error
+}
+
 func MigrateSchema(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		if tx.Dialector.Name() == "postgres" {
@@ -1287,6 +1309,9 @@ func MigrateSchema(db *gorm.DB) error {
 			return err
 		}
 		if err := normalizeLegacyWorkbenchMigration(tx); err != nil {
+			return err
+		}
+		if err := relocateFilmMigrations(tx); err != nil {
 			return err
 		}
 		plan, err := migrationsForDatabase(tx)

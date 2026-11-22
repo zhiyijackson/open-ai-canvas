@@ -83,7 +83,7 @@ export function sourceChars(text: string) {
  * perEpisode：每个标题段落就是一集（剧本、分镜或逐集制作的小说）。
  * 此时不按段落自动切块、不合并短章，超过单集上限的段落标出来让用户拆分。
  */
-export function analyzeNovel(raw: string, options: { perEpisode?: boolean } = {}): NovelAnalysis {
+export function analyzeNovel(raw: string, options: { perEpisode?: boolean; keepShortChapters?: boolean } = {}): NovelAnalysis {
     const normalized = raw
         .replace(/\r\n?/g, "\n")
         .replace(/\u3000/g, "  ")
@@ -130,7 +130,7 @@ export function analyzeNovel(raw: string, options: { perEpisode?: boolean } = {}
         return { chapters: nonEmpty, issues, words: nonEmpty.reduce((sum, chapter) => sum + chapter.words, 0), removedNoiseLines: cleaned.removed };
     }
 
-    const merged = mergeShortChapters(nonEmpty);
+    const merged = options.keepShortChapters ? { chapters: nonEmpty, count: 0 } : mergeShortChapters(nonEmpty);
     if (merged.count) issues.push({ kind: "short", message: `${merged.count} 个不足 ${SHORT_CHAPTER_WORDS} 字的短章（如序章、楔子）已并入相邻章节` });
 
     return { chapters: merged.chapters, issues, words: merged.chapters.reduce((sum, chapter) => sum + chapter.words, 0), removedNoiseLines: cleaned.removed };

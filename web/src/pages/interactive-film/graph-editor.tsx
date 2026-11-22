@@ -5,7 +5,7 @@ import { AppModal } from "@/components/ui/product/app-modal";
 import { insertFilmNode } from "@/lib/interactive-film";
 import type { DramaEpisodeRow } from "@/services/api/drama";
 import { filmArrivals } from "@/lib/film-interactions";
-import { Button, Input, Select } from "antd";
+import { Button, Input, InputNumber, Select } from "antd";
 import { GitBranch, Plus, Trash2 } from "lucide-react";
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { nanoid } from "nanoid";
@@ -31,7 +31,7 @@ export function GraphEditor({
     episodes: DramaEpisodeRow[];
     initialInsert: string | null;
     uploadingNodes: string[];
-    onUpload: (scene: FilmScene, file: File) => void;
+    onUpload: (scene: FilmScene, file: File, exitIndex?: number) => void;
     episodeId?: string;
 }) {
     const scene = graph.scenes.find((s) => s.id === selected) || graph.scenes[0];
@@ -127,8 +127,33 @@ export function GraphEditor({
                                 initialEpisode={episodeId}
                                 loading={uploading}
                                 onUpload={(file) => onUpload(scene, file)}
-                                onMedia={(resourceId) => change({ media: { kind: scene.media!.kind, resourceId } })}
+                                onMedia={(resourceId) => change({ media: { ...scene.media!, resourceId } })}
+                                onPosition={(index, x, y) => change({ exits: scene.exits.map((edge, i) => (i === index && edge.spot ? { ...edge, spot: { ...edge.spot, x, y } } : edge)) })}
                             />
+                            {event && (
+                                <label>
+                                    画内选项样式
+                                    <Select
+                                        value={scene.media.presentation || (scene.exits.some((e) => e.spot) ? "spots" : "text")}
+                                        options={[
+                                            { value: "text", label: "画内文字" },
+                                            { value: "spots", label: "物件热点" },
+                                        ]}
+                                        onChange={(presentation) =>
+                                            change({
+                                                media: { ...scene.media!, presentation },
+                                                exits: presentation === "spots" ? scene.exits.map((e, i) => ({ ...e, spot: e.spot || { x: Math.round((100 * (i + 1)) / (scene.exits.length + 1)), y: 65 } })) : scene.exits,
+                                            })
+                                        }
+                                    />
+                                </label>
+                            )}
+                            {event && scene.mode === "next" && (
+                                <label>
+                                    自动继续（秒，0 为等候点击）
+                                    <InputNumber min={0} max={3600} value={(scene.media.advanceMs || 0) / 1000} onChange={(v) => change({ media: { ...scene.media!, advanceMs: Math.round((v || 0) * 1000) } })} />
+                                </label>
+                            )}
                             {scene.media.kind === "clip" && (
                                 <Button disabled={uploading} onClick={() => change({ media: undefined })}>
                                     改用整场分镜制作
@@ -192,7 +217,14 @@ export function GraphEditor({
                             <Button size="small" disabled={!edge.target || graph.scenes.length >= 300} onClick={() => setInsertion(i)}>
                                 插入节点
                             </Button>
-                            {event && <EventActionEditor edge={edge} onChange={(patch) => change({ exits: scene.exits.map((entry, j) => (j === i ? { ...entry, ...patch } : entry)) })} />}
+                            {event && (
+                                <EventActionEditor
+                                    loading={uploading}
+                                    onUpload={(file) => onUpload(scene, file, i)}
+                                    edge={edge}
+                                    onChange={(patch) => change({ exits: scene.exits.map((entry, j) => (j === i ? { ...entry, id: entry.id || nanoid(), ...patch } : entry)) })}
+                                />
+                            )}
                             {scene.mode === "choice" && scene.exits.length > 2 && (
                                 <Button aria-label="移除选项" onClick={() => change({ exits: scene.exits.filter((_, j) => j !== i) })}>
                                     ×

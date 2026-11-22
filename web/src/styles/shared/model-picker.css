@@ -777,7 +777,19 @@ html:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.ca
     overflow-x: hidden;
     overflow-y: auto;
 }
+.canvas-model-picker-back {
+    display: none;
+}
 @media (max-width: 720px) {
+    .canvas-model-picker-back {
+        display: inline-flex;
+        align-self: flex-start;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 8px;
+        font-size: var(--fs-label);
+        cursor: pointer;
+    }
     .canvas-model-picker-menu:is(.is-brand-list, .is-model-list) {
         width: calc(100vw - 24px);
     }

@@ -610,10 +610,10 @@ export function playbackVariantUrl(id: string) {
     return `${base}/resources/${encodeURIComponent(id)}/file?variant=playback`;
 }
 
-export async function getResourceBlob(storageKey: string, purpose: ResourceAccessPurpose = "browser-process") {
+export async function getResourceBlob(storageKey: string, purpose: ResourceAccessPurpose = "browser-process", variant: ResourceAccessVariant = "original") {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) return null;
-    const access = await getResourceAccess(storageKey, purpose);
+    const access = await getResourceAccess(storageKey, purpose, variant);
     // CDN/origin URLs carry their own authorization and must not receive the
     // application session cookie. Local/proxy delivery is intentionally
     // session-bound, so a Blob read must include it even when the URL is

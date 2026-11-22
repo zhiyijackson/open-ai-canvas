@@ -36,7 +36,7 @@ func (r *Repository) CreateInteractiveFilmOnce(film *model.InteractiveFilm) (*mo
 func (r *Repository) UpdateInteractiveFilm(film *model.InteractiveFilm, expected int64) error {
 	film.Revision = expected + 1
 	update := r.db.Model(film).Where("user_id = ? AND revision = ?", film.UserID, expected).
-		Select("Title", "Novel", "Direction", "Graph", "ProjectID", "Takes", "Revision", "UpdatedAt").Updates(film)
+		Select("Title", "Novel", "Direction", "Graph", "Setup", "ProjectID", "Takes", "Revision", "UpdatedAt").Updates(film)
 	if update.Error != nil {
 		return update.Error
 	}

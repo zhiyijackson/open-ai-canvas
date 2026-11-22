@@ -4,7 +4,7 @@ import { Button, Select } from "antd";
 import { Link, useSearchParams } from "react-router";
 import { WorkspacePage } from "@/components/layout/workspace-page";
 import type { FilmGraph, InteractiveFilm } from "@/services/api/interactive-films";
-import { FilmPlayer } from "./player";
+import { FilmPlayer } from "./studio-player";
 import { FilmAudit } from "./audit";
 import { useUserStore } from "@/stores/use-user-store";
 import { InteractionTrack } from "./interaction-track";

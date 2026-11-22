@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 import { startupChunks } from "./build/startup-chunks";
+import { filmRuntime } from "./build/film-runtime";
 import { resilientPreload } from "./build/resilient-preload";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
@@ -15,7 +16,7 @@ const appChangelog = readFileSync(resolve(webDir, "../CHANGELOG.md"), "utf8");
 const apiProxyTarget = process.env.VITE_API_PROXY_TARGET?.trim() || "http://127.0.0.1:8080";
 
 export default defineConfig({
-    plugins: [react(), resilientPreload(), startupChunks()],
+    plugins: [react(), resilientPreload(), startupChunks(), filmRuntime(webDir)],
     define: {
         __APP_VERSION__: JSON.stringify(appVersion),
         __APP_CHANGELOG__: JSON.stringify(appChangelog),

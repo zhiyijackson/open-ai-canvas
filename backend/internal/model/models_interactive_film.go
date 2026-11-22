@@ -1,6 +1,15 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+type FilmSetup struct {
+	ChapterIndexes []int           `json:"chapterIndexes"`
+	StyleID        string          `json:"styleId,omitempty"`
+	Settings       json.RawMessage `json:"settings,omitempty"`
+}
 
 type FilmExit struct {
 	Spot         *FilmSpot `json:"spot,omitempty"`
@@ -13,13 +22,19 @@ type FilmExit struct {
 }
 
 type FilmSpot struct {
-	X float64 `json:"x"`
-	Y float64 `json:"y"`
+	Width      float64 `json:"width,omitempty"`
+	Height     float64 `json:"height,omitempty"`
+	Appearance string  `json:"appearance,omitempty"`
+	ResourceID string  `json:"resourceId,omitempty"`
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
 }
 
 type FilmNodeMedia struct {
-	Kind       string `json:"kind"`
-	ResourceID string `json:"resourceId,omitempty"`
+	Presentation string `json:"presentation,omitempty"`
+	AdvanceMs    int    `json:"advanceMs,omitempty"`
+	Kind         string `json:"kind"`
+	ResourceID   string `json:"resourceId,omitempty"`
 }
 
 type FilmCue struct {
@@ -69,6 +84,7 @@ type FilmTake struct {
 }
 
 type InteractiveFilm struct {
+	Setup     *FilmSetup          `json:"setup,omitempty" gorm:"serializer:json;type:text"`
 	ID        string              `json:"id" gorm:"primaryKey;size:36"`
 	UserID    string              `json:"-" gorm:"index;size:36"`
 	Title     string              `json:"title" gorm:"size:120"`

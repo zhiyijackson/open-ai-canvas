@@ -6,7 +6,7 @@ import type { InteractiveFilm } from "@/services/api/interactive-films";
 import type { DramaEpisodeRow } from "@/services/api/drama";
 import { filmGraphIssue } from "@/lib/interactive-film";
 import { filmRouteCases, type FilmCheckpoint } from "@/lib/film-audit";
-import { FilmPlayer } from "./player";
+import { FilmPlayer } from "./studio-player";
 
 const records = localforage.createInstance({ name: "yingce-film-audit", storeName: "played" });
 type Props = {

@@ -1,10 +1,10 @@
 import { http } from "@/services/api/request";
-import type { DramaModels } from "@/services/api/drama";
+import type { DramaModels, DramaSettings } from "@/services/api/drama";
 
-export type FilmExit = { id?: string; label: string; target: string; item?: string; requiresItem?: string; spot?: { x: number; y: number }; feedback?: string };
+export type FilmExit = { id?: string; label: string; target: string; item?: string; requiresItem?: string; spot?: { x: number; y: number; width?: number; height?: number; appearance?: "static" | "glow"; resourceId?: string }; feedback?: string };
 export type FilmCue = {
     id: string;
-    kind: "hotspot" | "choice";
+    kind: "hotspot" | "choice" | "caption";
     atMs: number;
     endMs?: number;
     x?: number;
@@ -19,9 +19,22 @@ export type FilmCue = {
     defaultExit?: string;
 };
 export type FilmTrack = { resourceId: string; durationMs: number; cues: FilmCue[] };
-export type FilmScene = { id: string; title: string; source: string; script: string; mode: "choice" | "next" | "ending"; exits: FilmExit[]; track?: FilmTrack; clue?: string; response?: string; media?: { kind: "event" | "clip"; resourceId?: string } };
+export type FilmScene = {
+    id: string;
+    title: string;
+    source: string;
+    script: string;
+    mode: "choice" | "next" | "ending";
+    exits: FilmExit[];
+    track?: FilmTrack;
+    clue?: string;
+    response?: string;
+    media?: { kind: "event" | "clip"; resourceId?: string; advanceMs?: number; presentation?: "text" | "spots" };
+};
 export type FilmGraph = { start: string; scenes: FilmScene[] };
-export type FilmDraft = { title: string; novel: string; direction: string; graph: FilmGraph; revision: number };
+export type FilmSettings = Omit<Partial<DramaSettings>, "models"> & { models?: Partial<DramaModels> };
+export type FilmSetup = { chapterIndexes?: number[] | null; styleId?: string; settings?: FilmSettings };
+export type FilmDraft = { title: string; novel: string; direction: string; graph: FilmGraph; revision: number; setup?: FilmSetup };
 export type InteractiveFilm = FilmDraft & { id: string; projectId: string; takes: Record<string, { episodeId: string; script: string }>; updatedAt: string };
 const base = "/interactive-films";
 export function getFilmAdaptationMethod(signal: AbortSignal) {
@@ -34,8 +47,8 @@ export function getInteractiveFilm(id: string, signal?: AbortSignal) {
     return http.get<InteractiveFilm>(base + "/" + encodeURIComponent(id), { signal });
 }
 export function saveInteractiveFilm(draft: FilmDraft & { creationKey?: string }, id?: string) {
-    const { title, novel, direction, graph, revision } = draft;
-    const input = { title, novel, direction, graph, revision };
+    const { title, novel, direction, graph, revision, setup } = draft;
+    const input = { title, novel, direction, graph, revision, setup };
     return id ? http.put<InteractiveFilm>(base + "/" + encodeURIComponent(id), input) : http.post<InteractiveFilm>(base, { ...input, creationKey: draft.creationKey });
 }
 export function produceFilmScenes(id: string, revision: number, sceneIds: string[], models?: Partial<DramaModels>) {

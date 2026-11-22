@@ -5197,6 +5197,12 @@ components:
       type: object
       required: [title]
       properties:
+        setup:
+          type: object
+          properties:
+            styleId: { type: string }
+            chapterIndexes: { type: array, nullable: true, items: { type: integer, minimum: 0 } }
+            settings: { type: object, description: 首次投产使用的短剧制作设置，含画幅、画风、分镜规则、模型及资产方案 }
         creationKey: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$', writeOnly: true, description: 仅创建时使用。同一用户以相同标识重试时返回已有作品的当前版本。 }
         title: { type: string, maxLength: 100 }
         novel: { type: string, maxLength: 6000000 }
@@ -5226,6 +5232,8 @@ components:
                     properties:
                       kind: { type: string, enum: [event, clip] }
                       resourceId: { type: string, description: 当前用户的就绪图片或视频资源。事件底图可省略 }
+                      presentation: { type: string, enum: [text, spots], description: 事件选项的画内呈现方式 }
+                      advanceMs: { type: integer, minimum: 0, maximum: 3600000, description: 单出口事件的自动继续时间，0 为等待点击 }
                   track:
                     type: object
                     properties:
@@ -5239,12 +5247,12 @@ components:
                           required: [id, kind, atMs]
                           properties:
                             id: { type: string }
-                            kind: { type: string, enum: [hotspot, choice] }
+                            kind: { type: string, enum: [hotspot, choice, caption] }
                             atMs: { type: integer, minimum: 0 }
                             endMs: { type: integer }
                             x: { type: number, minimum: 0, maximum: 100 }
                             y: { type: number, minimum: 0, maximum: 100 }
-                            label: { type: string, maxLength: 60 }
+                            label: { type: string, maxLength: 500, description: 画内对白最多 500 字，热点最多 60 字 }
                             feedback: { type: string, maxLength: 500 }
                             collectionName: { type: string, maxLength: 60 }
                             question: { type: string, maxLength: 80 }
@@ -5269,6 +5277,10 @@ components:
                           properties:
                             x: { type: number, minimum: 0, maximum: 100 }
                             y: { type: number, minimum: 0, maximum: 100 }
+                            width: { type: number, minimum: 0, maximum: 100 }
+                            height: { type: number, minimum: 0, maximum: 100 }
+                            appearance: { type: string, enum: [static, glow] }
+                            resourceId: { type: string, description: 当前用户已就绪的热点图片或 GIF }
     SystemUpdateSources:
       type: object
       required: [githubSource, imageSource]

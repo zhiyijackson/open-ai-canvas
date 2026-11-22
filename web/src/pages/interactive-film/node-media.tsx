@@ -6,53 +6,12 @@ import { dramaKeys } from "@/lib/drama/drama-query-keys";
 import { useResourceMediaUrl } from "@/pages/projects/drama-shared";
 import type { FilmExit, FilmScene } from "@/services/api/interactive-films";
 
-export function EventFrame({ scene, exits, onAction }: { scene: FilmScene; exits: FilmExit[]; onAction: (edge: FilmExit) => void }) {
-    const url = useResourceMediaUrl(scene.media?.resourceId);
-    const [feedback, setFeedback] = useState<FilmExit>();
-    function choose(edge: FilmExit) {
-        if (edge.feedback) setFeedback(edge);
-        else onAction(edge);
-    }
-    return (
-        <>
-            <p className="film-script">{scene.script}</p>
-            {url && (
-                <div className="film-event-frame">
-                    <img src={url} alt={scene.title} />
-                    {!feedback &&
-                        exits.map(
-                            (edge, i) =>
-                                edge.spot && (
-                                    <Button key={i} className="film-event-spot" style={{ left: edge.spot.x + "%", top: edge.spot.y + "%" }} onClick={() => choose(edge)} aria-label={edge.label || "继续"}>
-                                        {i + 1}
-                                    </Button>
-                                ),
-                        )}
-                </div>
-            )}
-            {feedback ? (
-                <>
-                    <p role="status">{feedback.feedback}</p>
-                    <Button onClick={() => onAction(feedback)}>继续剧情</Button>
-                </>
-            ) : (
-                <div className="film-actions">
-                    {exits.map((edge, i) => (
-                        <Button key={i} onClick={() => choose(edge)}>
-                            {edge.label || "继续"}
-                        </Button>
-                    ))}
-                </div>
-            )}
-        </>
-    );
-}
-
 export function NodeMediaEditor({
     scene,
     projectId,
     episodes,
     onMedia,
+    onPosition,
     initialEpisode,
     loading,
     onUpload,
@@ -61,6 +20,7 @@ export function NodeMediaEditor({
     projectId?: string;
     episodes: DramaEpisodeRow[];
     onMedia: (resourceId: string) => void;
+    onPosition: (index: number, x: number, y: number) => void;
     initialEpisode?: string;
     loading: boolean;
     onUpload: (file: File) => void;
@@ -108,7 +68,35 @@ export function NodeMediaEditor({
                 />
             </label>
             {loading && <span role="status">正在上传…</span>}
-            {url && (clip ? <video src={url} controls playsInline /> : <img src={url} alt="事件底图" />)}
+            {clip ? (
+                url && <video src={url} controls playsInline />
+            ) : (
+                <div className="film-event-frame" data-image={!!url} aria-label="事件画面布局">
+                    {url && <img className="film-event-background" src={url} alt="事件底图" />}
+                    <p className="film-screen-caption">{scene.script}</p>
+                    {scene.exits.map(
+                        (edge, i) =>
+                            edge.spot && (
+                                <button
+                                    type="button"
+                                    className="film-event-spot"
+                                    key={edge.id || i}
+                                    aria-label={"移动热点 · " + edge.label}
+                                    style={{ left: edge.spot.x + "%", top: edge.spot.y + "%", touchAction: "none" }}
+                                    onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
+                                    onPointerMove={(e) => {
+                                        if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+                                        const box = e.currentTarget.parentElement!.getBoundingClientRect();
+                                        const percent = (n: number) => Math.round(Math.min(100, Math.max(0, n * 100)));
+                                        onPosition(i, percent((e.clientX - box.left) / box.width), percent((e.clientY - box.top) / box.height));
+                                    }}
+                                >
+                                    {edge.label || "继续"}
+                                </button>
+                            ),
+                    )}
+                </div>
+            )}
             {scene.media?.resourceId && (
                 <Button disabled={loading} onClick={() => onMedia("")}>
                     移除素材
@@ -118,12 +106,43 @@ export function NodeMediaEditor({
     );
 }
 
-export function EventActionEditor({ edge, onChange }: { edge: FilmExit; onChange: (patch: Partial<FilmExit>) => void }) {
+export function EventActionEditor({ edge, onChange, onUpload, loading }: { onUpload: (f: File) => void; loading: boolean; edge: FilmExit; onChange: (patch: Partial<FilmExit>) => void }) {
     return (
         <div className="film-event-action">
             <Input aria-label="点击后的反馈" placeholder="点击后的线索或反馈（可选）" maxLength={500} value={edge.feedback} onChange={(e) => onChange({ feedback: e.target.value })} />
             {edge.spot ? (
                 <>
+                    <label>
+                        热点外观
+                        <Select
+                            value={edge.spot.appearance || "glow"}
+                            options={[
+                                { value: "glow", label: "呼吸光圈" },
+                                { value: "static", label: "静态标记" },
+                            ]}
+                            onChange={(appearance) => onChange({ spot: { ...edge.spot!, appearance } })}
+                        />
+                    </label>
+                    <label>
+                        热点图片 / GIF
+                        <input
+                            type="file"
+                            disabled={loading}
+                            accept="image/png,image/jpeg,image/webp,image/gif"
+                            onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                e.target.value = "";
+                                if (f) onUpload(f);
+                            }}
+                        />
+                    </label>
+                    {edge.spot.resourceId && <Button onClick={() => onChange({ spot: { ...edge.spot!, resourceId: undefined } })}>移除贴图</Button>}
+                    {(["width", "height"] as const).map((k) => (
+                        <label key={k}>
+                            {k === "width" ? "热区宽度 %" : "热区高度 %"}
+                            <InputNumber min={1} max={100} placeholder="自动" value={edge.spot?.[k]} onChange={(n) => onChange({ spot: { ...edge.spot!, [k]: n ?? undefined } })} />
+                        </label>
+                    ))}
                     {(["x", "y"] as const).map((axis) => (
                         <label key={axis}>
                             {axis === "x" ? "水平位置" : "垂直位置"}

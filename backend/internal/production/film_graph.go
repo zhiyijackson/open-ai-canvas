@@ -101,6 +101,11 @@ func validateFilmInteractions(graph model.FilmGraph, nodes map[string]model.Film
 			}
 			cueIDs[cue.ID] = true
 			switch cue.Kind {
+			case "caption":
+				if cue.EndMs <= cue.AtMs || cue.EndMs > track.DurationMs || strings.TrimSpace(cue.Label) == "" || len([]rune(cue.Label)) > 500 {
+					return fmt.Errorf("%s 的画内对白设置无效", scene.Title)
+				}
+				lastEnd = cue.EndMs
 			case "hotspot":
 				if cue.EndMs <= cue.AtMs || cue.EndMs > track.DurationMs || cue.X < 0 || cue.X > 100 || cue.Y < 0 || cue.Y > 100 || strings.TrimSpace(cue.Label) == "" || clues[cue.ID] {
 					return fmt.Errorf("%s 的热点设置无效", scene.Title)

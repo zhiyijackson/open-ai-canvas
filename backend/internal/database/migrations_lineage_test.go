@@ -10,6 +10,38 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestMigrateSchemaFromInteractiveFilmBranch(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: t.TempDir() + "/film.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrator().DropTable(&model.CloudAgentHistoryArchive{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("version = ?", 110).Delete(&schemaMigration{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []int{111, 112} {
+		if err := db.Model(&schemaMigration{}).Where("version = ?", v).UpdateColumn("version", v-1).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := MigrateSchema(db); err != nil {
+			t.Fatal(err)
+		}
+		if err := RequireSchemaVersion(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !db.Migrator().HasTable(&model.CloudAgentHistoryArchive{}) {
+		t.Fatal("main archive migration was skipped")
+	}
+}
+
 func legacyFolderMigrationDatabase(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared"})

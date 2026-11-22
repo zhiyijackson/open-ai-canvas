@@ -1,0 +1,273 @@
+* {
+    box-sizing: border-box;
+}
+body {
+    --film-ink: #11100f;
+    --film-paper: #fff7e8;
+    --film-glass: rgb(25 22 19 / 83%);
+    --film-edge: rgb(255 247 232 / 46%);
+    --film-display: "Songti SC", "Noto Serif CJK SC", STSong, serif;
+    margin: 0;
+    background: var(--film-ink);
+    color: var(--film-paper);
+    font:
+        16px/1.55 Inter,
+        system-ui,
+        sans-serif;
+}
+button {
+    font: inherit;
+    cursor: pointer;
+}
+#app :focus-visible,
+.film-menu :focus-visible {
+    outline: 2px solid var(--film-paper);
+    outline-offset: -3px;
+}
+.film-cover,
+.film-player[data-audience="true"] {
+    position: relative;
+    isolation: isolate;
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    min-height: 100dvh;
+    max-width: none;
+    overflow: clip;
+}
+.film-cover {
+    align-content: end;
+    justify-items: start;
+}
+.film-cover > :is(img, video),
+.film-cover::after,
+.film-ambience {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: -2;
+    pointer-events: none;
+}
+.film-cover::after {
+    content: "";
+    z-index: -1;
+    background: linear-gradient(0deg, rgb(15 13 12 / 92%), transparent 70%);
+}
+.film-cover-credit {
+    padding: 24px max(8vw, env(safe-area-inset-left)) max(9dvh, env(safe-area-inset-bottom));
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+.film-cover h1,
+.film-ending-title {
+    margin: 0 0 0.45em;
+    font: 600 clamp(40px, 7vw, 100px)/1.12 var(--film-display);
+    letter-spacing: 0.055em;
+    text-shadow: 0 2px 20px rgb(0 0 0 / 40%);
+}
+.film-cover button,
+.film-menu button,
+.film-menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.65em;
+    min-height: 44px;
+    padding: 0.58em 1.4em;
+    border-radius: 999px;
+    border: 1px solid var(--film-edge);
+    background: var(--film-glass);
+    color: var(--film-paper);
+}
+.film-cover button,
+.film-menu-actions button:last-child {
+    background: var(--film-paper);
+    color: var(--film-ink);
+}
+.film-ambience {
+    filter: blur(36px) brightness(0.38);
+    transform: scale(1.1);
+}
+.film-menu-trigger {
+    position: absolute;
+    z-index: 3;
+    top: max(10px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+    width: 44px;
+    padding: 0;
+    background: rgb(20 18 16 / 56%);
+}
+.film-menu {
+    width: min(340px, 90vw);
+    max-height: 85dvh;
+    overflow: auto;
+    padding: 24px;
+    border: 1px solid var(--film-edge);
+    border-radius: 16px;
+    background: var(--film-ink);
+    color: var(--film-paper);
+}
+.film-menu::backdrop {
+    background: rgb(0 0 0 / 62%);
+}
+.film-menu h2 {
+    margin: 0;
+    font: 600 24px/1.4 var(--film-display);
+}
+.film-preferences {
+    margin: 14px 0;
+}
+.film-preferences label {
+    display: flex;
+    min-height: 44px;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+}
+.film-menu-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+}
+.film-player .film-interactive-monitor,
+.film-player .film-event-frame {
+    width: min(100%, calc(100dvh * var(--film-aspect, 1.77778)));
+    aspect-ratio: var(--film-aspect, 1.77778);
+    border-radius: 0;
+    overflow: hidden;
+}
+.film-player .film-event-frame[data-image="false"] {
+    width: 100%;
+    min-height: 100dvh;
+    aspect-ratio: auto;
+}
+.film-player .film-interactive-monitor video,
+.film-player .film-event-background {
+    display: block;
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    object-fit: contain;
+    border-radius: 0;
+}
+.film-screen-toggle {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-content: center;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: white;
+}
+.film-screen-toggle svg {
+    opacity: 0;
+    padding: 14px;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--film-glass);
+}
+.film-screen-toggle[data-paused="true"] svg,
+.film-screen-toggle:focus-visible svg {
+    opacity: 1;
+}
+.film-event-prompt,
+.film-screen-caption {
+    padding: clamp(10px, 3vmin, 36px) max(9%, env(safe-area-inset-right)) 1.4em;
+    font: 500 clamp(15px, 2.2vmin, 26px)/1.55 var(--film-display);
+    text-align: center;
+    text-shadow: 0 1px 5px black;
+}
+.film-choice-overlay {
+    border-radius: 0;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: max(4vmin, env(safe-area-inset-bottom));
+}
+.film-choice-overlay .film-actions,
+.film-event-options {
+    display: grid;
+    justify-items: stretch;
+    gap: 8px;
+    margin-inline: auto;
+    width: min(100%, 520px);
+    text-align: center;
+}
+.film-choice-overlay .film-actions {
+    margin-top: auto;
+}
+.film-event-options {
+    padding: 8px max(12px, 3%) max(10px, env(safe-area-inset-bottom));
+    background: transparent;
+}
+.film-event-options:empty {
+    display: none;
+}
+.film-event-options p {
+    background: var(--film-glass);
+    border-radius: 6px;
+    padding: 8px;
+}
+.film-player .film-event-frame button,
+.film-choice-overlay .film-actions .ant-btn {
+    background: var(--film-glass);
+    color: var(--film-paper);
+    border: 1px solid var(--film-edge);
+    border-radius: 8px;
+    font: inherit;
+    min-height: 44px;
+    height: auto;
+    white-space: normal;
+}
+.film-player .film-event-spot {
+    padding-inline: 3px;
+}
+.film-player .film-event-frame .film-event-spot {
+    border-radius: 999px;
+}
+.film-arrival-response {
+    position: absolute;
+    inset: auto 0 max(8px, env(safe-area-inset-bottom));
+    text-align: center;
+    pointer-events: none;
+    margin: 0;
+    background: var(--film-glass);
+}
+.film-menu-actions {
+    flex-wrap: wrap;
+}
+.film-menu-actions button {
+    padding-inline: 12px;
+}
+.film-cover h1,
+.film-event-prompt {
+    text-wrap: balance;
+}
+.film-ending-title {
+    font-size: clamp(22px, 4vmin, 48px);
+}
+.film-script,
+.film-loading {
+    max-width: 55ch;
+    margin: 1em;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .film-cover-credit,
+    .film-event-options:not(:empty),
+    .film-choice-overlay .film-actions {
+        animation: film-appear 0.3s ease-out both;
+    }
+    @keyframes film-appear {
+        from {
+            opacity: 0;
+            transform: translateY(5px);
+        }
+        to {
+            opacity: 1;
+            transform: none;
+        }
+    }
+}

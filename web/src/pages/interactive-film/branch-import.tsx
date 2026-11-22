@@ -8,18 +8,20 @@ import { MAX_NOVEL_FILE_BYTES } from "@/lib/canvas/canvas-document";
 import { filmNovelFits } from "@/lib/interactive-film";
 import { branchScriptExample, importedGraphIssue, parseBranchScript, replaceBranchTarget, type FilmImportReview } from "@/lib/film-script-import";
 import { saveInteractiveFilm, type InteractiveFilm } from "@/services/api/interactive-films";
+import { FilmSetupEditor, initialFilmSetup } from "./film-setup";
 
 export function BranchImport({ onSaved }: { onSaved: (film: InteractiveFilm) => void }) {
+    const [setup, setSetup] = useState(initialFilmSetup);
     const [title, setTitle] = useState(""),
         [text, setText] = useState(""),
         [review, setReview] = useState<FilmImportReview>(),
         [error, setError] = useState(""),
         [busy, setBusy] = useState(false);
     const fileInput = useRef<HTMLInputElement>(null),
-        lastSubmission = useRef<{ title: string; text: string; key: string } | null>(null),
+        lastSubmission = useRef<{ title: string; text: string; setup: typeof setup; key: string } | null>(null),
         submitting = useRef(false),
         saved = useRef(false);
-    const dirty = !!title || !!text;
+    const dirty = !!title || !!text || setup !== initialFilmSetup;
     const blocker = useBlocker(() => dirty && !saved.current);
     useEffect(() => {
         if (!dirty) return;
@@ -76,10 +78,10 @@ export function BranchImport({ onSaved }: { onSaved: (film: InteractiveFilm) => 
         setError("");
         try {
             const name = title.trim();
-            if (lastSubmission.current?.title !== name || lastSubmission.current.text !== text) {
-                lastSubmission.current = { title: name, text, key: nanoid() };
+            if (lastSubmission.current?.title !== name || lastSubmission.current.text !== text || lastSubmission.current.setup !== setup) {
+                lastSubmission.current = { title: name, text, setup, key: nanoid() };
             }
-            const film = await saveInteractiveFilm({ title: name, graph: review.graph, novel: text, direction: "", revision: 0, creationKey: lastSubmission.current.key });
+            const film = await saveInteractiveFilm({ title: name, graph: review.graph, novel: text, direction: "", revision: 0, setup, creationKey: lastSubmission.current.key });
             saved.current = true;
             onSaved(film);
         } catch (e) {
@@ -107,6 +109,7 @@ export function BranchImport({ onSaved }: { onSaved: (film: InteractiveFilm) => 
                     <GitBranch size={16} />
                     {review ? "核对剧情图" : "导入已有分支剧本"}
                 </h2>
+                {!busy && <FilmSetupEditor value={setup} onChange={setSetup} />}
                 {review && (
                     <small>
                         {review.graph.scenes.length} 场 · {review.graph.scenes.filter((s) => s.mode === "ending").length} 个结局
