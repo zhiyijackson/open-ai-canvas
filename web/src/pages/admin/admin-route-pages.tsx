@@ -13,6 +13,7 @@ const AdminAnnouncementsPanel = lazy(() => import("./components/admin-announceme
 const AdminBannerAnnouncementsPanel = lazy(() => import("./components/admin-banner-announcements-panel"));
 const CreditOperationsPanel = lazy(() => import("./components/credit-operations-panel"));
 const AccessSettingsPanel = lazy(() => import("./components/access-settings-panel"));
+const SmsSettingsPanel = lazy(() => import("./components/sms-settings-panel"));
 const EmailSettingsPanel = lazy(() => import("./components/email-settings-panel"));
 const FeatureAvailabilityPanel = lazy(() => import("./components/feature-availability-panel"));
 const StorageResourcesPanel = lazy(() => import("./components/storage-resources-panel"));
@@ -102,6 +103,7 @@ export function AccessSettingsPage() {
     return (
         <AdminPageFrame title="登录与注册" description="先控制账号创建，再配置第三方登录入口、服务协议与登录打开方式" scroll>
             <AccessSettingsPanel />
+            <SmsSettingsPanel />
         </AdminPageFrame>
     );
 }

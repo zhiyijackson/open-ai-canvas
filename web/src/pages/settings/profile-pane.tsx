@@ -24,6 +24,7 @@ import { getNotificationSettings, updateNotificationSettings } from "@/services/
 import { Switch } from "@/components/ui/base/switch";
 import { useUserStore } from "@/stores/use-user-store";
 import { profileAvatarError, profilePasswordError, profileReauthReady, profileSecondsRemaining } from "./profile-validation";
+import { ProfilePhoneBinding } from "./profile-phone-binding";
 import "./profile-pane.css";
 
 type PasswordFields = { currentPassword: string; newPassword: string; confirmPassword: string };
@@ -534,6 +535,17 @@ export function ProfilePane() {
                             )}
                         </section>
 
+                        <ProfilePhoneBinding
+                            key={profile.user.id}
+                            user={profile.user}
+                            hasPassword={profile.hasPassword}
+                            onBound={(user) => {
+                                queryClient.setQueryData<UserProfile>(queryKey, (current) => current && { ...current, user: { ...current.user, ...user } });
+                                const current = useUserStore.getState().user;
+                                if (current?.id === user.id) useUserStore.getState().setUser({ ...current, ...user });
+                                void queryClient.invalidateQueries({ queryKey, exact: true });
+                            }}
+                        />
                         <ConsumptionReportCard />
                     </div>
                 </div>

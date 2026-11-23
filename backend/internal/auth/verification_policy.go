@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+
 	"gorm.io/gorm"
 	"yingce/backend/internal/kernel"
 	"yingce/backend/internal/model"
@@ -46,7 +47,15 @@ func (s *Service) UpdateVerificationPolicy(actor *model.User, p VerificationPoli
 	if p.SMSAndEmailRegistration && (p.SMSRegistration || p.EmailRegistration) {
 		return nil, kernel.BadAuthRequest("短信+邮箱同时验证不能与单一验证注册同时开启")
 	}
-	if p.EmailLogin || p.EmailRegistration || p.SMSAndEmailRegistration {
+	current, err := s.verificationPolicy()
+	if err != nil {
+		return nil, err
+	}
+	// 单独切换短信登录时，保留已有注册策略，允许邮件服务尚未配置。
+	previousSMSLogin := current.SMSLogin
+	current.SMSLogin = p.SMSLogin
+	onlySMSLoginChanged := previousSMSLogin != p.SMSLogin && current == p
+	if !onlySMSLoginChanged && (p.EmailLogin || p.EmailRegistration || p.SMSAndEmailRegistration) {
 		enabled, err := s.EmailEnabled()
 		if err != nil {
 			return nil, err
@@ -55,7 +64,7 @@ func (s *Service) UpdateVerificationPolicy(actor *model.User, p VerificationPoli
 			return nil, kernel.BadAuthRequest("请先配置并开启邮件服务")
 		}
 	}
-	for scene, required := range map[string]bool{"login": p.SMSLogin, "register": p.SMSRegistration || p.SMSAndEmailRegistration} {
+	for scene, required := range map[string]bool{"login": p.SMSLogin, "register": !onlySMSLoginChanged && (p.SMSRegistration || p.SMSAndEmailRegistration)} {
 		if !required {
 			continue
 		}
