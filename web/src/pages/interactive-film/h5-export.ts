@@ -1,7 +1,7 @@
 import type { FilmGraph, InteractiveFilm } from "@/services/api/interactive-films";
 import type { DramaEpisodeRow } from "@/services/api/drama";
 import { filmTrackIssue } from "@/lib/film-interactions";
-import { filmGraphIssue } from "@/lib/interactive-film";
+import { filmExportMedia } from "@/lib/interactive-film";
 import { createZip } from "@/lib/zip";
 import { getResourceBlob, resourceStorageKey } from "@/services/api/resources";
 import studioStyle from "./studio.css?raw";
@@ -66,21 +66,15 @@ async function inspectVideo(blob: Blob, captureEnd: boolean): Promise<{ duration
 }
 
 export async function exportFilm(film: InteractiveFilm, episodes: DramaEpisodeRow[], progress: (message: string) => void) {
-    const issue = filmGraphIssue(film.graph);
+    const { issue, sceneResources } = filmExportMedia(film, episodes);
     if (issue) throw Error(issue);
-    const sceneResources: Record<string, string> = Object.create(null),
-        assets: Record<string, string> = Object.create(null);
+    const assets: Record<string, string> = Object.create(null);
     const posters: Record<string, string> = Object.create(null);
     const stills: Record<string, string> = Object.create(null);
     const resources = new Map<string, { name: string; kind: "image" | "video" }>();
     for (const scene of film.graph.scenes) {
-        const take = film.takes[scene.id];
-        const episode = episodes.find((e) => e.id === take?.episodeId);
-        const id = scene.media ? scene.media.resourceId : episode && !episode.finalStale && take.script === scene.script ? episode.finalResourceId : undefined;
-        if (scene.media?.kind !== "event" && !id) throw Error(`「${scene.title}」缺少可播放的最新成片`);
-        if (scene.track?.cues.length && scene.track.resourceId !== id) throw Error(`「${scene.title}」请先复核成片互动轨`);
+        const id = sceneResources[scene.id];
         if (id) {
-            sceneResources[scene.id] = id;
             resources.set(id, { name: scene.title, kind: scene.media?.kind === "event" ? "image" : "video" });
         }
         for (const edge of scene.exits) if (edge.spot?.resourceId) resources.set(edge.spot.resourceId, { name: `${scene.title} · ${edge.label}`, kind: "image" });

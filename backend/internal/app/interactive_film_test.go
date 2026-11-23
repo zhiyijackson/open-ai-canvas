@@ -50,6 +50,32 @@ func TestInteractiveFilmNodeMedia(t *testing.T) {
 	}
 }
 
+func TestInteractiveFilmImportedOfficialVideo(t *testing.T) {
+	svc, fake := newDramaTestService(t)
+	video := fake.resource("publisher", "video", "video/mp4")
+	if err := fake.db.AutoMigrate(&model.OfficialAsset{}, &model.OfficialAssetImport{}, &model.PluginPlatformState{}); err != nil {
+		t.Fatal(err)
+	}
+	official := model.OfficialAsset{ID: "official-clip", ResourceID: video, MediaType: "video", Status: model.OfficialAssetStatusPublished}
+	if err := fake.db.Create(&official).Error; err != nil {
+		t.Fatal(err)
+	}
+	const user = "usr-drama"
+	req := FilmDraftRequest{Title: "已有视频", Graph: model.FilmGraph{Start: "a", Scenes: []model.FilmScene{{ID: "a", Title: "回家", Script: "片尾", Mode: "ending", Media: &model.FilmNodeMedia{Kind: "clip", ResourceID: video}}}}}
+	if _, err := svc.SaveInteractiveFilm(user, "", req); err == nil {
+		t.Fatal("accepted an unimported shared video")
+	}
+	if _, err := svc.ImportOfficialAssetToLibrary(user, official.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SaveInteractiveFilm(user, "", req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SaveInteractiveFilm("other", "", req); err == nil {
+		t.Fatal("another user's import authorized a shared video")
+	}
+}
+
 func TestInteractiveFilmDraftOwnershipAndRevision(t *testing.T) {
 	svc, _ := newDramaTestService(t)
 	req := FilmDraftRequest{Title: "旧车票", Novel: "站台的故事"}

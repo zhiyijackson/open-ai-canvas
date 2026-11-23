@@ -5201,6 +5201,7 @@ components:
           type: object
           properties:
             styleId: { type: string }
+            manualGraph: { type: boolean, description: 使用已有素材手动搭建剧情图 }
             chapterIndexes: { type: array, nullable: true, items: { type: integer, minimum: 0 } }
             settings: { type: object, description: 首次投产使用的短剧制作设置，含画幅、画风、分镜规则、模型及资产方案 }
         creationKey: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$', writeOnly: true, description: 仅创建时使用。同一用户以相同标识重试时返回已有作品的当前版本。 }

@@ -109,7 +109,7 @@ func (s *Service) SaveInteractiveFilm(userID, id string, req FilmDraftRequest) (
 				return nil, BadAuthRequest("独立节点不能绑定场次互动轨")
 			}
 			if media.ResourceID != "" {
-				resource, err := s.repo.ResourceForUser(userID, media.ResourceID)
+				resource, err := s.repo.FilmNodeResource(userID, media.ResourceID)
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return nil, BadAuthRequest("节点素材不可用")
 				}

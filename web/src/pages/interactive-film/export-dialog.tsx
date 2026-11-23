@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Alert, Button, Radio } from "antd";
 import { Download } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
+import { filmExportMedia } from "@/lib/interactive-film";
 import type { InteractiveFilm } from "@/services/api/interactive-films";
 import type { DramaEpisodeRow } from "@/services/api/drama";
 
@@ -11,6 +12,7 @@ export function ExportDialog({ film, episodes }: { film: InteractiveFilm; episod
         [status, setStatus] = useState(""),
         [error, setError] = useState("");
     const lock = useRef(false);
+    const { issue } = filmExportMedia(film, episodes);
     async function download() {
         if (lock.current) return;
         lock.current = true;
@@ -38,6 +40,7 @@ export function ExportDialog({ film, episodes }: { film: InteractiveFilm; episod
     return (
         <>
             <Button
+                disabled={!!issue}
                 icon={<Download size={15} />}
                 onClick={() => {
                     setOpen(true);
@@ -47,6 +50,7 @@ export function ExportDialog({ film, episodes }: { film: InteractiveFilm; episod
             >
                 导出工程
             </Button>
+            {issue && <small role="status">{issue}</small>}
             <AppModal
                 title="导出工程"
                 open={open}
@@ -56,7 +60,7 @@ export function ExportDialog({ film, episodes }: { film: InteractiveFilm; episod
                 closable={!busy}
                 maskClosable={!busy}
                 footer={
-                    <Button type="primary" loading={busy} onClick={() => void download()}>
+                    <Button type="primary" disabled={!!issue} loading={busy} onClick={() => void download()}>
                         下载 H5 工程
                     </Button>
                 }

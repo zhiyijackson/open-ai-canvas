@@ -4,6 +4,11 @@ import { useQuery } from "@tanstack/react-query";
 import { getDramaEpisode, type DramaEpisodeRow } from "@/services/api/drama";
 import { dramaKeys } from "@/lib/drama/drama-query-keys";
 import { useResourceMediaUrl } from "@/pages/projects/drama-shared";
+import { AssetLibraryPickerModal } from "@/components/assets/asset-library-picker-modal";
+import { ASSET_CATEGORY_LABELS } from "@/lib/asset-category";
+import { resourceIdFromStorageKey } from "@/services/api/resources";
+import { importOfficialAssetToLibrary } from "@/services/api/official-assets";
+import type { Asset } from "@/stores/use-asset-store";
 import type { FilmExit, FilmScene } from "@/services/api/interactive-films";
 
 export function NodeMediaEditor({
@@ -26,6 +31,10 @@ export function NodeMediaEditor({
     onUpload: (file: File) => void;
 }) {
     const clip = scene.media?.kind === "clip";
+    const [picking, setPicking] = useState(false);
+    function pickedResource(asset?: Asset | { kind: string; data: { storageKey: string } }) {
+        if ((clip && asset?.kind === "video") || (!clip && asset?.kind === "image")) return resourceIdFromStorageKey(asset.data.storageKey);
+    }
     const [episode, setEpisode] = useState(initialEpisode || "");
     const episodeId = episode || episodes[0]?.id;
     const query = useQuery({ queryKey: dramaKeys.episode(projectId || "", episodeId || ""), enabled: !!(clip && projectId && episodeId), queryFn: ({ signal }) => getDramaEpisode(projectId!, episodeId!, signal) });
@@ -67,6 +76,30 @@ export function NodeMediaEditor({
                     }}
                 />
             </label>
+            <Button disabled={loading} onClick={() => setPicking(true)}>
+                {clip ? "从素材库选视频" : "从素材库选底图"}
+            </Button>
+            {picking && (
+                <AssetLibraryPickerModal
+                    open
+                    remoteLibrary
+                    remoteKind={clip ? "video" : "image"}
+                    acceptRemoteItems
+                    multiple={false}
+                    items={[]}
+                    categoryLabels={ASSET_CATEGORY_LABELS}
+                    remoteItemDisabledReason={(asset) => (pickedResource(asset) ? undefined : "请选择已同步的对应类型素材")}
+                    onClose={() => setPicking(false)}
+                    onConfirm={async ([id], items) => {
+                        const item = items?.find((entry) => entry.id === id);
+                        const asset = item?.officialAsset ? (await importOfficialAssetToLibrary(item.officialAsset.id)).asset : item?.asset;
+                        const resource = pickedResource(asset);
+                        if (!resource) throw Error("请选择已同步的对应类型素材");
+                        onMedia(resource);
+                        setPicking(false);
+                    }}
+                />
+            )}
             {loading && <span role="status">正在上传…</span>}
             {clip ? (
                 url && <video src={url} controls playsInline />

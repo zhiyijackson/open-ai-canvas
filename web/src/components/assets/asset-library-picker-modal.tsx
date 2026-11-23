@@ -244,15 +244,16 @@ export function AssetLibraryPickerModal({
     }, [keyword]);
     useEffect(() => setRemotePage(1), [category, mediaKind, remoteKeyword, open]);
     useEffect(() => setOfficialPage(1), [category, mediaKind, remoteKeyword, open]);
+    const officialKind = remoteKind || mediaKind;
     const officialQuery = useQuery({
-        queryKey: ["official-assets-picker", userId, officialPage, officialPageSize, category, mediaKind, remoteKeyword],
+        queryKey: ["official-assets-picker", userId, officialPage, officialPageSize, category, officialKind, remoteKeyword],
         queryFn: ({ signal }) =>
             fetchOfficialAssets(
                 {
                     page: officialPage,
                     pageSize: officialPageSize,
                     q: remoteKeyword || undefined,
-                    mediaType: mediaKind === "all" ? undefined : (mediaKind as "image" | "video" | "audio" | "entity"),
+                    mediaType: officialKind === "all" ? undefined : (officialKind as "image" | "video" | "audio" | "entity"),
                     category: category === "all" || category === "archived" ? undefined : (category as "character" | "environment" | "prop" | "material" | "other"),
                 },
                 signal,
@@ -450,7 +451,7 @@ export function AssetLibraryPickerModal({
                 setImportedPickerItems((current) => [...current.filter((entry) => entry.officialAsset?.id !== item.id), pickerItem]);
                 setImportedOfficialIds((current) => new Set(current).add(item.id));
                 setSelected((current) => new Set(multiple ? [...current, pickerItem.id] : [pickerItem.id]));
-                message.success("已选择官方素材，将直接引用到画布");
+                message.success("已选择官方素材");
                 return;
             }
             const result = await importOfficialAssetToProject(item.id, projectId);

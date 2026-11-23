@@ -136,6 +136,7 @@ export function EventFrame({
                 <p className="film-event-prompt">{scene.script}</p>
                 {!feedback && !textOnly && exits.map((edge, i) => edge.spot && <SpotButton key={edge.id || i} edge={edge} choose={() => choose(edge)} />)}
                 <div className="film-event-options">
+                    {scene.mode === "ending" && <strong>已抵达结局 · {scene.title}</strong>}
                     {scene.mode === "ending" && onReplay && (
                         <button type="button" onClick={onReplay}>
                             重新选择

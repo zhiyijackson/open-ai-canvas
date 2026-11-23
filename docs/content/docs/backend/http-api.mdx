@@ -1204,6 +1204,10 @@ install 的 Base URL、协议、能力和成本全部从服务端快照读取，
 
 草稿可携带 `setup`。`chapterIndexes` 是按原文顺序选择的零基章节下标，`styleId` 用于回显画风，`settings` 使用短剧创建接口的制作设置。首次投产按这些设置启动资产提取、分镜与视频制作流程。
 
+`setup.manualGraph` 为 `true` 时，编辑器打开已有素材搭建模式。该模式使用相同的图、节点资源、保存与版本冲突校验，允许原著和改编方向为空。
+
+手动草稿首次保存时使用 `creationKey`。成功响应丢失后，使用相同标识重试会返回同一部作品。节点可绑定个人资源，也可通过 `/api/official-assets/:id/import` 导入官方图片或视频后绑定该资源。保存接口校验当前用户的个人库导入记录、资源类型和就绪状态。
+
 登录用户通过 `GET /api/interactive-films` 读取自己的作品列表，`POST /api/interactive-films` 创建草稿。详情与保存使用 `GET`、`PUT /api/interactive-films/:id`。编辑字段包括 `title`、`novel`、`direction`、`graph`；更新必须携带读取到的 `revision`，旧版本返回 409。沿用短剧功能开关。
 
 创建和更新均支持最多 600 万个 Unicode 字符的原著，改编方向最多 1.2 万个字符。草稿 JSON 请求体上限为 64 MiB。

@@ -3,11 +3,28 @@ package repository
 import (
 	"errors"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"yingce/backend/internal/model"
 )
 
 var ErrFilmRevision = errors.New("interactive film revision changed")
+
+// Official library imports retain the publisher's resource ID.
+func (r *Repository) FilmNodeResource(userID, id string) (*model.Resource, error) {
+	owned, err := r.ResourceForUser(userID, id)
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return owned, err
+	}
+	imports := r.db.Table("official_asset_imports AS i").Select("o.resource_id").
+		Joins("JOIN official_assets AS o ON o.id = i.official_asset_id").
+		Where("i.scope = ? AND i.owner_id = ? AND o.deleted_at IS NULL", model.OfficialAssetImportScopeLibrary, userID)
+	var resource model.Resource
+	if err := r.db.Where("id = ? AND id IN (?)", id, imports).First(&resource).Error; err != nil {
+		return nil, err
+	}
+	return &resource, nil
+}
 
 func (r *Repository) ListInteractiveFilms(userID string) ([]model.InteractiveFilm, error) {
 	rows := []model.InteractiveFilm{}

@@ -2,7 +2,7 @@ import { SceneMap } from "./scene-map";
 import { useState } from "react";
 import { NodeMediaEditor, EventActionEditor } from "./node-media";
 import { AppModal } from "@/components/ui/product/app-modal";
-import { insertFilmNode } from "@/lib/interactive-film";
+import { insertFilmNode, newFilmMediaNode } from "@/lib/interactive-film";
 import type { DramaEpisodeRow } from "@/services/api/drama";
 import { filmArrivals } from "@/lib/film-interactions";
 import { Button, Input, InputNumber, Select } from "antd";
@@ -13,6 +13,7 @@ import type { FilmGraph, FilmScene } from "@/services/api/interactive-films";
 
 export function GraphEditor({
     graph,
+    manual = false,
     selected,
     onSelect,
     onChange,
@@ -24,6 +25,7 @@ export function GraphEditor({
     episodeId,
 }: {
     graph: FilmGraph;
+    manual?: boolean;
     selected: string;
     onSelect: (id: string) => void;
     onChange: (graph: FilmGraph) => void;
@@ -52,9 +54,10 @@ export function GraphEditor({
     function change(patch: Partial<FilmScene>) {
         onChange({ ...graph, scenes: graph.scenes.map((s) => (s.id === scene?.id ? { ...s, ...patch } : s)) });
     }
-    function add() {
+    function add(kind?: "event" | "clip") {
         const id = "s_" + nanoid(9);
-        onChange({ start: graph.start || id, scenes: [...graph.scenes, { id, title: "新场次", script: "", source: "", mode: "ending", exits: [] }] });
+        const node: FilmScene = kind ? newFilmMediaNode(id, kind) : { id, title: "新场次", script: "", source: "", mode: "ending", exits: [] };
+        onChange({ start: graph.start || id, scenes: [...graph.scenes, node] });
         onSelect(id);
     }
     function remove() {
@@ -82,12 +85,27 @@ export function GraphEditor({
                     <GitBranch className="size-4" />
                     剧情图
                 </h2>
-                <Button size="small" disabled={graph.scenes.length >= 300} onClick={add} icon={<Plus size={15} />}>
-                    添加场次
-                </Button>
+                {manual ? (
+                    <div className="film-actions">
+                        {(
+                            [
+                                ["clip", "添加视频"],
+                                ["event", "添加事件"],
+                            ] as const
+                        ).map(([kind, label]) => (
+                            <Button key={kind} size="small" disabled={graph.scenes.length >= 300} onClick={() => add(kind)} icon={<Plus size={15} />}>
+                                {label}
+                            </Button>
+                        ))}
+                    </div>
+                ) : (
+                    <Button size="small" disabled={graph.scenes.length >= 300} onClick={() => add()} icon={<Plus size={15} />}>
+                        添加场次
+                    </Button>
+                )}
             </div>
             {graph.scenes.length === 0 ? (
-                <WorkspaceState compact icon="projects" title="还没有场次" description="确认改编方向后生成剧情图，也可以手动添加第一个场次。" />
+                <WorkspaceState compact icon="projects" title={manual ? "添加第一个节点" : "还没有场次"} description={manual ? "从视频或互动事件开始，第一个节点将成为故事入口。" : "确认改编方向后生成剧情图，也可以手动添加第一个场次。"} />
             ) : (
                 <>
                     <label>
@@ -109,10 +127,12 @@ export function GraphEditor({
                         {scene.media ? "节点名称" : "场名"}
                         <Input value={scene.title} maxLength={60} onChange={(e) => change({ title: e.target.value })} />
                     </label>
-                    <label>
-                        原著出处
-                        <Input value={scene.source} onChange={(e) => change({ source: e.target.value })} />
-                    </label>
+                    {!manual && (
+                        <label>
+                            原著出处
+                            <Input value={scene.source} onChange={(e) => change({ source: e.target.value })} />
+                        </label>
+                    )}
                     <label>
                         {event ? "给观众的提示" : "动作与对白"}
                         <Input.TextArea value={scene.script} autoSize={{ minRows: 4, maxRows: 14 }} onChange={(e) => change({ script: e.target.value })} />
@@ -214,8 +234,8 @@ export function GraphEditor({
                                 options={options.filter((o) => o.value !== scene.id)}
                                 onChange={(target) => change({ exits: scene.exits.map((v, j) => (j === i ? { ...v, target } : v)) })}
                             />
-                            <Button size="small" disabled={!edge.target || graph.scenes.length >= 300} onClick={() => setInsertion(i)}>
-                                插入节点
+                            <Button size="small" disabled={graph.scenes.length >= 300} onClick={() => setInsertion(i)}>
+                                {edge.target ? "插入节点" : "新建并连接"}
                             </Button>
                             {event && (
                                 <EventActionEditor

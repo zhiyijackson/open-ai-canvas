@@ -29,6 +29,8 @@ export function parseAssetRecord(value: unknown): Asset {
     const metadata = optionalRecord(value.metadata, "metadata");
     const category = value.category === undefined ? undefined : parseAssetCategory(value.category);
     const data = requireRecord(value.data, "data");
+    // Earlier official imports stored only their durable resource locator.
+    const officialStorageOnly = typeof data.officialAssetId === "string" && !!data.officialAssetId && typeof data.resourceId === "string" && !!data.resourceId && data.storageKey === `resource:${data.resourceId}`;
     const base = {
         id,
         title,
@@ -52,7 +54,7 @@ export function parseAssetRecord(value: unknown): Asset {
     }
     if (kind === "image") {
         const parsed = {
-            dataUrl: requireString(data, "dataUrl"),
+            dataUrl: officialStorageOnly && data.dataUrl === undefined ? "" : requireString(data, "dataUrl"),
             storageKey: optionalString(data, "storageKey"),
             width: requirePositiveNumber(data, "width"),
             height: requirePositiveNumber(data, "height"),
@@ -64,7 +66,7 @@ export function parseAssetRecord(value: unknown): Asset {
     }
     if (kind === "video") {
         const parsed = {
-            url: requireString(data, "url"),
+            url: officialStorageOnly && data.url === undefined ? "" : requireString(data, "url"),
             storageKey: optionalString(data, "storageKey"),
             // 上游视频结果经常不带 width/height。0 表示未知，不是伪造尺寸；
             // 若按「必须大于 0」拒绝，生成成功并已扣费的视频会在入库时被判失败。

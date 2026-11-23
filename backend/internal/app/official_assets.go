@@ -410,6 +410,12 @@ func buildImportedAsset(userID string, official model.OfficialAsset, resource *m
 		"licenseNote": snapshot.LicenseNote, "usageNote": snapshot.UsageNote,
 		"importedAt": snapshot.ImportedAt, "resourceId": snapshot.ResourceID,
 	}
+	switch official.MediaType {
+	case "image":
+		data["dataUrl"] = ""
+	case "video", "audio":
+		data["url"] = ""
+	}
 	payload, err := json.Marshal(map[string]any{
 		"id": assetID, "kind": official.MediaType, "category": official.Category,
 		"status": model.AssetVersionStatusConfirmed, "primaryVersionId": versionID,

@@ -33,7 +33,7 @@ export type FilmScene = {
 };
 export type FilmGraph = { start: string; scenes: FilmScene[] };
 export type FilmSettings = Omit<Partial<DramaSettings>, "models"> & { models?: Partial<DramaModels> };
-export type FilmSetup = { chapterIndexes?: number[] | null; styleId?: string; settings?: FilmSettings };
+export type FilmSetup = { manualGraph?: boolean; chapterIndexes?: number[] | null; styleId?: string; settings?: FilmSettings };
 export type FilmDraft = { title: string; novel: string; direction: string; graph: FilmGraph; revision: number; setup?: FilmSetup };
 export type InteractiveFilm = FilmDraft & { id: string; projectId: string; takes: Record<string, { episodeId: string; script: string }>; updatedAt: string };
 const base = "/interactive-films";

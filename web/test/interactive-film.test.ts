@@ -3,7 +3,23 @@ import { importedGraphIssue, parseBranchScript, replaceBranchTarget } from "../s
 import { filmTrackIssue, filmRulesIssue, filmArrivals, availableExits, inspectFilmCue, takeFilmExit } from "../src/lib/film-interactions";
 import type { FilmGraph, FilmCue } from "../src/services/api/interactive-films";
 import { filmDecisionKey, filmRouteCases } from "../src/lib/film-audit";
-import { appendFilmScenes, filmGraphIssue, filmNovelFits, insertFilmNode, missingFilmScenes, parseFilmGraph, recoverFilmGraph } from "../src/lib/interactive-film";
+import { appendFilmScenes, filmGraphIssue, filmNovelFits, insertFilmNode, newFilmMediaNode, missingFilmScenes, parseFilmGraph, recoverFilmGraph } from "../src/lib/interactive-film";
+
+test("手工搭建可从空出口接入结局并保留另一个分支", () => {
+    const opening = newFilmMediaNode("open", "event");
+    opening.mode = "choice";
+    opening.exits = [
+        { label: "留下", target: "", feedback: "门关上了" },
+        { label: "出发", target: "" },
+    ];
+    const first = insertFilmNode({ start: opening.id, scenes: [opening] }, opening.id, 0, "stay", "clip");
+    const graph = insertFilmNode(first, opening.id, 1, "go", "clip");
+    expect(graph.scenes[0].exits[0]).toEqual({ ...opening.exits[0], target: "stay" });
+    expect(graph.scenes[1].mode).toBe("ending");
+    expect(filmGraphIssue(graph, true)).toBe("");
+    expect(filmGraphIssue(graph)).toContain("绑定视频");
+    expect(insertFilmNode(graph, opening.id, 8, "bad", "clip")).toBe(graph);
+});
 
 test("连线上插入节点保留选择条件、效果和汇合点，片段可沿用同集素材", () => {
     const { graph } = parseBranchScript("[A] 入站\n铃响。\n- 查票 → E\n- 绕行 → E\n[E] 月台\n火车来了。");

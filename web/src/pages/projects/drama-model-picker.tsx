@@ -8,8 +8,8 @@ import { cn } from "@/lib/utils";
 import { getDramaModels, type DramaCapability, type DramaModelChoice } from "@/services/api/drama";
 import { useEffectiveConfig } from "@/stores/use-config-store";
 
-export function useDramaModelCatalog() {
-    return useQuery({ queryKey: ["drama-models"], queryFn: getDramaModels, staleTime: 60_000 });
+export function useDramaModelCatalog(enabled = true) {
+    return useQuery({ queryKey: ["drama-models"], queryFn: getDramaModels, staleTime: 60_000, enabled });
 }
 
 /**

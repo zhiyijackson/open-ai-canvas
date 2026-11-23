@@ -1,23 +1,24 @@
-import type { FilmGraph, FilmScene } from "@/services/api/interactive-films";
+import type { FilmGraph, FilmScene, InteractiveFilm } from "@/services/api/interactive-films";
+import type { DramaEpisodeRow } from "@/services/api/drama";
 import { filmRulesIssue } from "./film-interactions";
 
 const MAX_NOVEL_CHARACTERS = 6_000_000;
+
+export function newFilmMediaNode(id: string, kind: "event" | "clip"): FilmScene {
+    return { id, title: kind === "event" ? "互动事件" : "视频片段", source: "", script: kind === "event" ? "点击继续" : "下一段剧情", media: { kind }, mode: "ending", exits: [] };
+}
 
 export function insertFilmNode(graph: FilmGraph, sourceId: string, exitIndex: number, id: string, kind: "event" | "clip"): FilmGraph {
     const source = graph.scenes.find((scene) => scene.id === sourceId);
     if (!source || graph.scenes.length >= 300 || graph.scenes.some((scene) => scene.id === id)) return graph;
     const append = source.mode === "ending" && exitIndex === -1;
     const edge = source.exits[exitIndex];
-    if (!append && !edge?.target) return graph;
-    const scene: FilmScene = {
-        id,
-        title: kind === "event" ? "互动事件" : "视频片段",
-        source: "",
-        script: kind === "event" ? "点击继续" : "下一段剧情",
-        media: { kind },
-        mode: append ? "ending" : "next",
-        exits: append ? [] : [{ label: "继续", target: edge.target }],
-    };
+    if (!append && !edge) return graph;
+    const scene = newFilmMediaNode(id, kind);
+    if (edge?.target) {
+        scene.mode = "next";
+        scene.exits = [{ label: "继续", target: edge.target }];
+    }
     const upstream: FilmScene = append ? { ...source, mode: "next", exits: [{ label: "继续", target: id }] } : { ...source, exits: source.exits.map((exit, index) => (index === exitIndex ? { ...exit, target: id } : exit)) };
     return { ...graph, scenes: [...graph.scenes.map((s) => (s.id === sourceId ? upstream : s)), scene] };
 }
@@ -66,6 +67,22 @@ export function filmGraphIssue(graph: FilmGraph, topologyOnly = false): string {
     const issue = walk(graph.start);
     const unreachable = graph.scenes.find((scene) => !seen.has(scene.id));
     return issue || (unreachable ? "从入口无法到达 " + unreachable.title : topologyOnly ? "" : filmRulesIssue(graph));
+}
+
+export function filmExportMedia(film: InteractiveFilm, episodes: DramaEpisodeRow[]) {
+    const sceneResources: Record<string, string> = Object.create(null);
+    const issue = filmGraphIssue(film.graph);
+    if (issue) return { issue, sceneResources };
+    const byEpisode = new Map(episodes.map((episode) => [episode.id, episode]));
+    for (const scene of film.graph.scenes) {
+        const take = film.takes[scene.id];
+        const episode = take && byEpisode.get(take.episodeId);
+        const id = scene.media ? scene.media.resourceId : episode && !episode.finalStale && take.script === scene.script ? episode.finalResourceId : undefined;
+        if (!id && scene.media?.kind !== "event") return { issue: `「${scene.title}」缺少可播放的最新成片`, sceneResources };
+        if (scene.track?.cues.length && scene.track.resourceId !== id) return { issue: `「${scene.title}」请先复核成片互动轨`, sceneResources };
+        if (id) sceneResources[scene.id] = id;
+    }
+    return { issue: "", sceneResources };
 }
 
 export function parseFilmGraph(text: string): FilmGraph {

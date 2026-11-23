@@ -6,6 +6,7 @@ import (
 )
 
 type FilmSetup struct {
+	ManualGraph    bool            `json:"manualGraph,omitempty"`
 	ChapterIndexes []int           `json:"chapterIndexes"`
 	StyleID        string          `json:"styleId,omitempty"`
 	Settings       json.RawMessage `json:"settings,omitempty"`

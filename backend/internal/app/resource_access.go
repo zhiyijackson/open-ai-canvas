@@ -131,9 +131,9 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 		return delivery, nil
 	}
 	if access.ActualVariant == assets.VariantPlayback {
-		delivery.Stream, err = s.OpenResourcePlaybackRange(userID, resource.ID)
+		delivery.Stream, err = s.OpenResourcePlaybackRange(resource.UserID, resource.ID)
 	} else {
-		delivery.Stream, err = s.openResourceRange(userID, resource, rangeHeader)
+		delivery.Stream, err = s.openResourceRange(resource.UserID, resource, rangeHeader)
 	}
 	if err != nil {
 		return nil, err
