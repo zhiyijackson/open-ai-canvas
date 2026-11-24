@@ -1345,4 +1345,6 @@ install 的 Base URL、协议、能力和成本全部从服务端快照读取，
 
 ### 互动影游事件表现
 
+手动视频节点 `media.kind = clip` 可以保存 `track`。其中 `resourceId` 标记配置时的视频版本，`durationMs` 与 `cues[].atMs` 均为毫秒。换片后需复核互动轨再导出。图片或 GIF 事件在进入场次时显示，保存接口拒绝为这类节点绑定视频互动轨。
+
 `graph.scenes[].exits[].spot` 支持百分比坐标和宽高、`appearance`（`glow`、`static`）及贴图 `resourceId`。事件素材和贴图均按当前账号检查归属与类型。单出口事件的 `media.advanceMs` 控制自动继续，0 为等待点击。互动轨的 `caption` 使用 `label`、`atMs`、`endMs` 显示限时对白。H5 导出使用当前已保存的作品版本和已授权的素材读取接口。

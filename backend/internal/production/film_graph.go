@@ -77,7 +77,8 @@ func ValidateFilmGraph(graph model.FilmGraph) error {
 }
 
 func validateFilmInteractions(graph model.FilmGraph, nodes map[string]model.FilmScene) error {
-	clues := map[string]bool{}
+	type clueSource struct{ scene, label string }
+	clues := map[string]clueSource{}
 	for _, scene := range graph.Scenes {
 		exitIDs := map[string]bool{}
 		for _, exit := range scene.Exits {
@@ -107,10 +108,15 @@ func validateFilmInteractions(graph model.FilmGraph, nodes map[string]model.Film
 				}
 				lastEnd = cue.EndMs
 			case "hotspot":
-				if cue.EndMs <= cue.AtMs || cue.EndMs > track.DurationMs || cue.X < 0 || cue.X > 100 || cue.Y < 0 || cue.Y > 100 || strings.TrimSpace(cue.Label) == "" || clues[cue.ID] {
+				_, duplicate := clues[cue.ID]
+				if cue.EndMs <= cue.AtMs || cue.EndMs > track.DurationMs || cue.X < 0 || cue.X > 100 || cue.Y < 0 || cue.Y > 100 || strings.TrimSpace(cue.Label) == "" || duplicate {
 					return fmt.Errorf("%s 的热点设置无效", scene.Title)
 				}
-				clues[cue.ID] = true
+				label := cue.CollectionName
+				if label == "" {
+					label = cue.Label
+				}
+				clues[cue.ID] = clueSource{scene.ID, label}
 				lastEnd = cue.EndMs
 			case "choice":
 				if scene.Mode != "choice" || index != len(track.Cues)-1 || cue.TimeoutMs < 0 || cue.TimeoutMs > 3600000 {
@@ -123,7 +129,8 @@ func validateFilmInteractions(graph model.FilmGraph, nodes map[string]model.Film
 	}
 	type location struct{ scene, item string }
 	seen := map[location]bool{}
-	reachable := map[string]bool{}
+	arrivals := map[string][]location{}
+	next := map[location][]location{}
 	queue := []location{{scene: graph.Start}}
 	for len(queue) > 0 {
 		current := queue[len(queue)-1]
@@ -132,9 +139,9 @@ func validateFilmInteractions(graph model.FilmGraph, nodes map[string]model.Film
 			continue
 		}
 		seen[current] = true
-		reachable[current.scene] = true
+		arrivals[current.scene] = append(arrivals[current.scene], current)
 		scene := nodes[current.scene]
-		if scene.Clue != "" && !clues[scene.Clue] {
+		if _, ok := clues[scene.Clue]; scene.Clue != "" && !ok {
 			return fmt.Errorf("%s 引用了已移除的线索", scene.Title)
 		}
 		available := 0
@@ -158,7 +165,9 @@ func validateFilmInteractions(graph model.FilmGraph, nodes map[string]model.Film
 			if exit.Item != "" {
 				item = exit.Item
 			}
-			queue = append(queue, location{exit.Target, item})
+			target := location{exit.Target, item}
+			next[current] = append(next[current], target)
+			queue = append(queue, target)
 		}
 		if scene.Mode != "ending" && available == 0 {
 			return fmt.Errorf("%s 在携带物「%s」下没有可用出口", scene.Title, current.item)
@@ -167,9 +176,33 @@ func validateFilmInteractions(graph model.FilmGraph, nodes map[string]model.Film
 			return fmt.Errorf("%s 的超时默认出口不可用", scene.Title)
 		}
 	}
+	downstream := map[string]map[string]bool{}
 	for _, scene := range graph.Scenes {
-		if !reachable[scene.ID] {
+		if len(arrivals[scene.ID]) == 0 {
 			return fmt.Errorf("%s 的携带条件使本场无法到达", scene.Title)
+		}
+		source, ok := clues[scene.Clue]
+		if !ok || source.scene == scene.ID {
+			continue
+		}
+		if downstream[source.scene] == nil {
+			reached := map[string]bool{}
+			visited := map[location]bool{}
+			pending := append([]location(nil), arrivals[source.scene]...)
+			for len(pending) > 0 {
+				at := pending[len(pending)-1]
+				pending = pending[:len(pending)-1]
+				if visited[at] {
+					continue
+				}
+				visited[at] = true
+				reached[at.scene] = true
+				pending = append(pending, next[at]...)
+			}
+			downstream[source.scene] = reached
+		}
+		if !downstream[source.scene][scene.ID] {
+			return fmt.Errorf("%s 的观众无法在回应前取得线索「%s」", scene.Title, source.label)
 		}
 	}
 	return nil

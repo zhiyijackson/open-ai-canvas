@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FilmExit, FilmScene } from "@/services/api/interactive-films";
 import { useFilmMediaUrl } from "./film-media";
 
-function SpotButton({ edge, choose }: { edge: FilmExit; choose: () => void }) {
+function SpotButton({ edge, choose, marked }: { edge: FilmExit; choose: () => void; marked: boolean }) {
     const image = useFilmMediaUrl(edge.spot?.resourceId);
     const spot = edge.spot!;
     return (
@@ -10,6 +10,9 @@ function SpotButton({ edge, choose }: { edge: FilmExit; choose: () => void }) {
             type="button"
             data-glow={spot.appearance !== "static"}
             className="film-event-spot"
+            data-rehearsal-target={marked || undefined}
+            aria-label={edge.label || "继续"}
+            aria-description={marked ? "本次试玩的出口" : undefined}
             style={{ left: spot.x + "%", top: spot.y + "%", width: spot.width ? spot.width + "%" : undefined, height: spot.height ? spot.height + "%" : undefined }}
             onClick={choose}
         >
@@ -21,8 +24,10 @@ function SpotButton({ edge, choose }: { edge: FilmExit; choose: () => void }) {
 
 export function EventFrame({
     scene,
+    markedExit,
     exits,
     onAction,
+    canFollow,
     background,
     backdropVideo,
     suspended,
@@ -30,8 +35,10 @@ export function EventFrame({
     onReplay,
 }: {
     scene: FilmScene;
+    markedExit?: string;
     exits: FilmExit[];
-    onAction: (edge: FilmExit) => void;
+    onAction?: (edge: FilmExit) => void;
+    canFollow?: (edge: FilmExit) => boolean;
     background?: string;
     backdropVideo?: string;
     suspended?: boolean;
@@ -95,10 +102,10 @@ export function EventFrame({
     function commit(edge: FilmExit) {
         if (submit.current) return;
         submit.current = true;
-        onAction(edge);
+        onAction?.(edge);
     }
     function choose(edge: FilmExit) {
-        if (feedback) return;
+        if (!onAction || feedback || (canFollow && !canFollow(edge))) return;
         if (edge.feedback) setFeedback(edge);
         else commit(edge);
     }
@@ -134,7 +141,7 @@ export function EventFrame({
             )}
             <div className="film-event-content">
                 <p className="film-event-prompt">{scene.script}</p>
-                {!feedback && !textOnly && exits.map((edge, i) => edge.spot && <SpotButton key={edge.id || i} edge={edge} choose={() => choose(edge)} />)}
+                {!feedback && !textOnly && exits.map((edge, i) => edge.spot && <SpotButton key={edge.id || i} edge={edge} marked={!!markedExit && markedExit === edge.id} choose={() => choose(edge)} />)}
                 <div className="film-event-options">
                     {scene.mode === "ending" && <strong>已抵达结局 · {scene.title}</strong>}
                     {scene.mode === "ending" && onReplay && (
@@ -151,7 +158,14 @@ export function EventFrame({
                         </>
                     ) : (
                         options.map((edge, i) => (
-                            <button type="button" key={edge.id || i} onClick={() => choose(edge)}>
+                            <button
+                                type="button"
+                                key={edge.id || i}
+                                aria-label={edge.label || "继续"}
+                                aria-description={markedExit && markedExit === edge.id ? "本次试玩的出口" : undefined}
+                                data-rehearsal-target={(!!markedExit && markedExit === edge.id) || undefined}
+                                onClick={() => choose(edge)}
+                            >
                                 {edge.label || "继续"}
                             </button>
                         ))

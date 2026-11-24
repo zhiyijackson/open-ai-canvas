@@ -236,26 +236,26 @@ export function srtToVtt(srt: string) {
 }
 
 /** 解析资源的授权播放地址；视频优先使用浏览器兼容的播放副本。 */
-export function resolveDramaMedia(resourceId: string, variant: ResourceAccessVariant) {
-    return getResourceAccess(`resource:${resourceId}`, "display", variant)
-        .catch(() => getResourceAccess(`resource:${resourceId}`, "display", "original"))
+export function resolveDramaMedia(resourceId: string, variant: ResourceAccessVariant, forceRefresh = false) {
+    const accessFor = (requested: ResourceAccessVariant) => getResourceAccess(`resource:${resourceId}`, "display", requested, "", { forceRefresh });
+    return accessFor(variant)
+        .catch(() => accessFor("original"))
         .then((access) => resolveResourceAccessURL(access.url))
         .catch(() => resourceUrl(resourceId));
 }
-export function useResourceMediaUrl(resourceId: string | undefined, variant: ResourceAccessVariant = "original") {
-    const [url, setUrl] = useState("");
+export function useResourceMediaUrl(resourceId: string | undefined, variant: ResourceAccessVariant = "original", attempt = 0) {
+    const [media, setMedia] = useState<{ id: string; variant: ResourceAccessVariant; attempt: number; url: string }>();
     useEffect(() => {
-        setUrl("");
         if (!resourceId) return;
         let active = true;
-        void resolveDramaMedia(resourceId, variant).then((url) => {
-            if (active) setUrl(url);
+        void resolveDramaMedia(resourceId, variant, attempt > 0).then((url) => {
+            if (active) setMedia({ id: resourceId, variant, attempt, url });
         });
         return () => {
             active = false;
         };
-    }, [resourceId, variant]);
-    return url;
+    }, [resourceId, variant, attempt]);
+    return media && media.id === resourceId && media.variant === variant && media.attempt === attempt ? media.url : "";
 }
 
 export async function downloadResource(resourceId: string, fileName: string) {

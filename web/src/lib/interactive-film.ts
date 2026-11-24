@@ -1,6 +1,6 @@
 import type { FilmGraph, FilmScene, InteractiveFilm } from "@/services/api/interactive-films";
 import type { DramaEpisodeRow } from "@/services/api/drama";
-import { filmRulesIssue } from "./film-interactions";
+import { filmRulesIssue, filmRuleIssues, type FilmValidationIssue } from "./film-interactions";
 
 const MAX_NOVEL_CHARACTERS = 6_000_000;
 
@@ -34,39 +34,53 @@ export function filmNovelFits(novel: string) {
     return true;
 }
 
+export function canOpenFilmWorkbench(graph: FilmGraph, manual?: boolean) {
+    if (!manual) return !filmGraphIssue(graph, true);
+    const ids = new Set(graph.scenes.map((scene) => scene.id));
+    return ids.has(graph.start) && ids.size === graph.scenes.length;
+}
+
 export function filmGraphIssue(graph: FilmGraph, topologyOnly = false): string {
-    const nodes = new Map(graph.scenes.map((scene) => [scene.id, scene]));
-    if (!nodes.has(graph.start)) return "请选择有效的入口场次";
-    if (nodes.size !== graph.scenes.length) return "场次编号重复";
+    return filmGraphIssues(graph, topologyOnly).next().value?.message ?? "";
+}
+
+export function* filmGraphIssues(graph: FilmGraph, topologyOnly = false): Generator<FilmValidationIssue, void> {
+    const nodes = new Map<string, FilmScene>();
+    for (const scene of graph.scenes) {
+        if (nodes.has(scene.id)) yield { scene: scene.id, message: "场次编号重复" };
+        nodes.set(scene.id, scene);
+    }
+    if (!nodes.has(graph.start)) yield { scene: graph.scenes[0]?.id ?? graph.start, message: "请选择有效的入口场次" };
     for (const scene of graph.scenes) {
         const title = scene.title || scene.id;
-        if (!topologyOnly && scene.media?.kind === "clip" && !scene.media.resourceId) return title + " 需要绑定视频片段";
-        if (!scene.title.trim() || !scene.script.trim()) return title + " 缺少标题或剧本";
-        if (scene.mode === "ending" && scene.exits.length) return title + " 是结局，不能有出口";
-        if (scene.mode === "next" && scene.exits.length !== 1) return title + " 需要一个续播目标";
-        if (scene.mode === "choice" && scene.exits.length < 2) return title + " 至少需要两个选择";
-        for (const exit of scene.exits) {
-            if (!nodes.has(exit.target)) return title + " 的出口缺少有效目标";
-            if (scene.mode === "choice" && !exit.label.trim()) return title + " 的选项缺少文字";
+        const issue = (message: string) => ({ scene: scene.id, message: title + " " + message });
+        if (!topologyOnly && scene.media?.kind === "clip" && !scene.media.resourceId) yield { ...issue("需要绑定视频片段"), summary: "缺少可播放的最新成片" };
+        if (!scene.title.trim() || !scene.script.trim()) yield issue("缺少标题或剧本");
+        if (scene.mode === "ending" && scene.exits.length) yield issue("是结局，不能有出口");
+        if (scene.mode === "next" && scene.exits.length !== 1) yield issue("需要一个续播目标");
+        if (scene.mode === "choice" && scene.exits.length < 2) yield issue("至少需要两个选择");
+        for (const [index, exit] of scene.exits.entries()) {
+            if (!nodes.has(exit.target)) yield { ...issue("的出口缺少有效目标"), exit: index, summary: "待连接目标" };
+            if (scene.mode === "choice" && !exit.label.trim()) yield { ...issue("的选项缺少文字"), exit: index, summary: "缺少选项文案" };
         }
     }
     const seen = new Set<string>(),
         active = new Set<string>();
-    function walk(id: string): string {
-        if (active.has(id)) return "剧情回环经过 " + nodes.get(id)!.title;
-        if (seen.has(id)) return "";
+    function* walk(id: string): Generator<FilmValidationIssue, void> {
+        const scene = nodes.get(id);
+        if (!scene) return;
+        if (active.has(id)) yield { scene: id, message: "剧情回环经过 " + scene.title };
+        if (seen.has(id)) return;
         seen.add(id);
         active.add(id);
-        for (const { target } of nodes.get(id)!.exits) {
-            const issue = walk(target);
-            if (issue) return issue;
-        }
+        for (const { target } of scene.exits) yield* walk(target);
         active.delete(id);
-        return "";
     }
-    const issue = walk(graph.start);
-    const unreachable = graph.scenes.find((scene) => !seen.has(scene.id));
-    return issue || (unreachable ? "从入口无法到达 " + unreachable.title : topologyOnly ? "" : filmRulesIssue(graph));
+    yield* walk(graph.start);
+    for (const scene of graph.scenes) {
+        if (!seen.has(scene.id)) yield { scene: scene.id, message: "从入口无法到达 " + scene.title, summary: "从入口无法到达" };
+    }
+    if (!topologyOnly) yield* filmRuleIssues(graph);
 }
 
 export function filmExportMedia(film: InteractiveFilm, episodes: DramaEpisodeRow[]) {
@@ -83,6 +97,26 @@ export function filmExportMedia(film: InteractiveFilm, episodes: DramaEpisodeRow
         if (id) sceneResources[scene.id] = id;
     }
     return { issue: "", sceneResources };
+}
+
+export function filmTrialIssue(graph: FilmGraph) {
+    return filmGraphIssue(graph, true) || filmRulesIssue(graph);
+}
+
+export function filmSceneResource(scene: FilmScene, takes: InteractiveFilm["takes"], episodes: DramaEpisodeRow[]) {
+    if (scene.media) return scene.media.resourceId;
+    const take = takes[scene.id];
+    const episode = episodes.find((row) => row.id === take?.episodeId);
+    return episode && !episode.finalStale && take?.script === scene.script ? episode.finalResourceId : undefined;
+}
+
+export function filmEventBackdrop(graph: FilmGraph, scene: FilmScene, priorIds: string[]) {
+    if (scene.media?.kind !== "event" || scene.media.resourceId) return;
+    if (!priorIds.length) {
+        const parents = graph.scenes.filter((s) => s.exits.some((edge) => edge.target === scene.id));
+        if (parents.length === 1) priorIds = [parents[0].id];
+    }
+    return priorIds.map((id) => graph.scenes.find((s) => s.id === id)).find((s) => s && (s.media?.resourceId || s.media?.kind !== "event"));
 }
 
 export function parseFilmGraph(text: string): FilmGraph {

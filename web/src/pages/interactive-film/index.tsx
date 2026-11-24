@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, App, Button, Input, Segmented } from "antd";
 import { BranchImport } from "./branch-import";
 import { ArrowLeft, FileText, FileUp, GitBranch, Play, Plus } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Navigate, useBlocker, useLinkClickHandler, useNavigate, useParams, useSearchParams } from "react-router";
 import { nanoid } from "nanoid";
+import { filmDraftStorage as draftStore } from "./draft-storage";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { uploadResourceFile } from "@/services/api/resources";
 import { getDrama } from "@/services/api/drama";
@@ -14,7 +15,7 @@ import { ChapterPickList } from "@/pages/projects/chapter-pick-list";
 import { FilmSetupEditor, initialFilmSetup } from "./film-setup";
 import { ApiError } from "@/services/api/request";
 import { getInteractiveFilm, listInteractiveFilms, saveInteractiveFilm, type FilmDraft, type FilmScene, type InteractiveFilm } from "@/services/api/interactive-films";
-import { appendFilmScenes, filmGraphIssue, filmNovelFits, missingFilmScenes, parseFilmGraph, recoverFilmGraph } from "@/lib/interactive-film";
+import { appendFilmScenes, canOpenFilmWorkbench, filmTrialIssue, filmNovelFits, missingFilmScenes, parseFilmGraph, recoverFilmGraph } from "@/lib/interactive-film";
 import { decodeNovelText, MAX_NOVEL_FILE_BYTES } from "@/lib/canvas/canvas-document";
 import { dramaChoiceToModel } from "@/lib/drama/model-choice";
 import { adaptFilm } from "@/services/interactive-film-adaptation";
@@ -26,6 +27,8 @@ import { PageHeader, WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceLoadingState, WorkspaceErrorState, WorkspaceState } from "@/components/layout/workspace-state";
 import { RelativeTime } from "@/components/ui/product/relative-time";
 import { FilmProduction } from "./production";
+import type { TrackDraft } from "./interaction-track";
+import { TrackDraftReview } from "./track-draft-review";
 import { GraphEditor } from "./graph-editor";
 import { ExportDialog } from "./export-dialog";
 import { FilmPlayer } from "./studio-player";
@@ -35,13 +38,35 @@ import "./studio.css";
 const blank: FilmDraft = { title: "", novel: "", direction: "", graph: { start: "", scenes: [] }, revision: 0, setup: initialFilmSetup };
 const base = "/interactive-films";
 const newFilmPath = base + "/new";
+type Recovery = { draft: FilmDraft; record?: Pick<InteractiveFilm, "id" | "projectId" | "takes" | "updatedAt">; creationKey?: string; token: string };
 export default function InteractiveFilmPage() {
     const { filmId } = useParams();
-    const [params] = useSearchParams();
+    const [params, setParams] = useSearchParams();
+    const cache = useQueryClient();
+    const { message } = App.useApp();
     const openNewFilm = useLinkClickHandler<HTMLAnchorElement | HTMLButtonElement>(newFilmPath);
     const owner = useUserStore((state) => state.user?.id);
+    const mode = params.get("mode");
+    const scope = JSON.stringify([owner, filmId, filmId === "new" ? mode || "novel" : "edit"]);
+    const readDraft = !!owner && !!filmId && (filmId === "new" ? mode !== "import" : mode === "edit" && filmId !== "sample");
+    const recovery = useQuery({ queryKey: ["film-editor-draft", scope], queryFn: () => draftStore.getItem<Recovery>(scope, true), enabled: readDraft, networkMode: "always", retry: false, gcTime: 0, refetchOnWindowFocus: false });
+    const onTrack = !!owner && !!filmId && filmId !== "new" && filmId !== "sample" && !mode && params.get("tab") === "final";
+    const requestedScene = params.get("scene");
+    const trackScope = onTrack && requestedScene ? JSON.stringify([owner, filmId, "track", requestedScene]) : undefined;
+    const trackRecovery = useQuery({ queryKey: ["film-track-draft", trackScope], queryFn: () => draftStore.getItem<TrackDraft>(trackScope!), enabled: !!trackScope, networkMode: "always", retry: false, gcTime: 0, refetchOnWindowFocus: false });
     const listing = useQuery({ queryKey: ["interactive-films", owner], queryFn: ({ signal }) => listInteractiveFilms(signal), enabled: !!owner && !filmId });
     const record = useQuery({ queryKey: ["interactive-film", owner, filmId], queryFn: ({ signal }) => getInteractiveFilm(filmId!, signal), enabled: !!owner && !!filmId && filmId !== "new" && filmId !== "sample" });
+    const [working, setWorking] = useState<{ scope: string; draft: TrackDraft }>();
+    const rememberTrack = useCallback((draft: TrackDraft | null) => setWorking(draft && trackScope ? { scope: trackScope, draft } : undefined), [trackScope]);
+    const trackDraft = trackScope ? (working?.scope === trackScope ? working.draft : trackRecovery.data) : undefined;
+    const local = readDraft ? recovery.data : undefined;
+    const kind = readDraft ? (filmId === "new" ? mode || "novel" : "edit") : onTrack ? "track" : undefined;
+    const browse = !!owner && !!filmId && filmId !== "sample" && (readDraft || onTrack || (!mode && !params.size));
+    const lookup = ["film-recovery-list", owner, filmId, kind, onTrack ? requestedScene : null];
+    const available = useQuery({ queryKey: lookup, queryFn: () => draftStore.list(owner!, filmId!, kind, onTrack ? requestedScene : null), enabled: browse, gcTime: 0, networkMode: "always", retry: false, refetchOnWindowFocus: false });
+    const [skipped, setSkipped] = useState("");
+    const [restoring, setRestoring] = useState(false);
+    const locationKey = JSON.stringify(lookup);
     if (!owner) return null;
     if (filmId === "sample") return <FilmSample />;
     if (!filmId) {
@@ -96,19 +121,90 @@ export default function InteractiveFilmPage() {
             </WorkspacePage>
         );
     }
-    if (filmId !== "new" && !record.data) return <WorkspacePage>{record.error ? <WorkspaceErrorState description={record.error.message} onRetry={() => void record.refetch()} /> : <WorkspaceLoadingState label="正在打开影游" />}</WorkspacePage>;
-    const film = record.data;
-    const mode = params.get("mode");
+    if ((readDraft && recovery.isPending) || (trackScope && trackRecovery.isPending)) return <WorkspaceLoadingState label="正在读取本地草稿" />;
+    if (onTrack && !requestedScene && record.data?.graph.start) {
+        const canonical = new URLSearchParams(params);
+        canonical.set("scene", record.data.graph.start);
+        return <Navigate replace to={{ search: canonical.toString() }} />;
+    }
+    if (browse && available.isPending) return <WorkspaceLoadingState label="正在查找待同步草稿" />;
+    if (browse && !local && !trackDraft && skipped !== locationKey && available.data?.length)
+        return (
+            <WorkspacePage>
+                <section className="film-panel">
+                    <h2>恢复本地草稿</h2>
+                    {available.data.map((item) => (
+                        <article key={item.key}>
+                            <h3>{item.title}</h3>
+                            <p>
+                                {item.preview}
+                                {item.savedAt && ` · ${new Date(item.savedAt).toLocaleString()}`}
+                            </p>
+                            <Button
+                                disabled={restoring}
+                                onClick={async () => {
+                                    setRestoring(true);
+                                    try {
+                                        const destination = item.scene ? JSON.stringify([owner, filmId, "track", item.scene]) : item.scope;
+                                        await draftStore.restore(item, destination);
+                                        const data = await draftStore.getItem(destination);
+                                        cache.setQueryData([item.scene ? "film-track-draft" : "film-editor-draft", destination], data);
+                                        cache.setQueryData(
+                                            lookup,
+                                            available.data.filter((entry) => entry.key !== item.key),
+                                        );
+                                        if (item.scene) setParams({ scene: item.scene, tab: "final" }, { replace: true });
+                                        else if (!readDraft) setParams({ mode: "edit" }, { replace: true });
+                                    } catch (error) {
+                                        message.error(error instanceof Error ? error.message : "恢复失败，请重试");
+                                        void available.refetch();
+                                    } finally {
+                                        setRestoring(false);
+                                    }
+                                }}
+                            >
+                                恢复此草稿
+                            </Button>
+                        </article>
+                    ))}
+                    <Button type="text" disabled={restoring} onClick={() => setSkipped(locationKey)}>
+                        暂不恢复
+                    </Button>
+                </section>
+            </WorkspacePage>
+        );
+    const offline = record.fetchStatus === "paused" || (record.error instanceof ApiError && record.error.status === undefined);
+    const film = record.data || (offline ? trackDraft?.base || (local?.record ? { ...local.draft, ...local.record } : undefined) : undefined);
+    if (filmId !== "new" && !film) return <WorkspacePage>{record.error ? <WorkspaceErrorState description={record.error.message} onRetry={() => void record.refetch()} /> : <WorkspaceLoadingState label="正在打开影游" />}</WorkspacePage>;
     if (film && mode !== "edit") {
-        if (!filmGraphIssue(film.graph, !film.setup?.manualGraph)) return <FilmProduction key={owner + ":" + film.id} film={film} owner={owner} />;
+        const ready = canOpenFilmWorkbench(film.graph, film.setup?.manualGraph);
+        const remote = trackDraft && film.graph.scenes.find((s) => s.id === trackDraft.scene.id);
+        if (trackScope && trackDraft && (!ready || !remote || remote.media?.kind === "event")) return <TrackDraftReview scope={trackScope} draft={trackDraft} reason="服务器上的场次或节点类型已变更" retry={() => record.refetch()} />;
+        if (ready) return <FilmProduction key={owner + ":" + film.id} film={film} owner={owner} trackScope={trackScope} trackDraft={trackDraft} onTrackDraft={rememberTrack} />;
         const editParams = new URLSearchParams(params);
         editParams.set("mode", "edit");
         return <Navigate replace to={{ pathname: base + "/" + film.id, search: editParams.toString() }} />;
     }
-    return <FilmStudio key={JSON.stringify([owner, filmId, filmId === "new" && mode])} owner={owner} initial={film} sceneId={params.get("scene")} />;
+    return <FilmStudio key={scope} scope={scope} local={local} owner={owner} initial={film} sceneId={params.get("scene")} />;
 }
 
-function DraftLeaveGuard({ changed, createdPath, busy, uploads, canSave, save }: { changed: boolean; createdPath: React.RefObject<string>; busy: boolean; uploads: number; canSave: boolean; save: (onSaved: () => void) => Promise<boolean> }) {
+function DraftLeaveGuard({
+    changed,
+    createdPath,
+    busy,
+    uploads,
+    canSave,
+    save,
+    discard,
+}: {
+    changed: boolean;
+    createdPath: React.RefObject<string>;
+    busy: boolean;
+    uploads: number;
+    canSave: boolean;
+    save: (onSaved: () => void) => Promise<boolean>;
+    discard: () => Promise<boolean>;
+}) {
     const blocker = useBlocker(({ nextLocation }) => changed && nextLocation.pathname !== createdPath.current);
     useEffect(() => {
         if (!changed) return;
@@ -128,7 +224,13 @@ function DraftLeaveGuard({ changed, createdPath, busy, uploads, canSave, save }:
                 if (!busy) blocker.reset();
             }}
             footer={[
-                <Button key="discard" disabled={busy} onClick={() => blocker.proceed()}>
+                <Button
+                    key="discard"
+                    disabled={busy}
+                    onClick={async () => {
+                        if (await discard()) blocker.proceed();
+                    }}
+                >
                     放弃修改
                 </Button>,
                 <Button key="stay" disabled={busy} onClick={() => blocker.reset()}>
@@ -151,18 +253,19 @@ function DraftLeaveGuard({ changed, createdPath, busy, uploads, canSave, save }:
     );
 }
 
-function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; owner: string; sceneId: string | null }) {
+function FilmStudio({ initial, owner, sceneId, scope, local }: { initial?: InteractiveFilm; owner: string; sceneId: string | null; scope: string; local?: Recovery | null }) {
     const { message, modal } = App.useApp(),
         navigate = useNavigate(),
         cache = useQueryClient();
     const back = useLinkClickHandler<HTMLAnchorElement | HTMLButtonElement>(base);
     const [saved, setSaved] = useState(initial);
-    const [conflict, setConflict] = useState<InteractiveFilm>();
+    const [conflict, setConflict] = useState<InteractiveFilm | undefined>(() => (local && initial && initial.revision !== local.draft.revision ? initial : undefined));
     const [studioParams, setStudioParams] = useSearchParams();
-    const [draft, setDraft] = useState<FilmDraft>(() => initial || (studioParams.get("mode") === "manual" ? { ...blank, setup: { manualGraph: true } } : blank)),
-        [dirty, setDirty] = useState(false);
+    const [draft, setDraft] = useState<FilmDraft>(() => local?.draft || initial || (studioParams.get("mode") === "manual" ? { ...blank, setup: { manualGraph: true } } : blank)),
+        [dirty, setDirty] = useState(!!local);
+    const [snapshot, setSnapshot] = useState(local);
     const createdPath = useRef("");
-    const firstSubmission = useRef<{ key: string; draft: FilmDraft } | null>(null);
+    const firstSubmission = useRef<{ key: string; draft?: FilmDraft } | null>(local?.creationKey ? { key: local.creationKey } : null);
     const [uploadingNodes, setUploadingNodes] = useState<string[]>([]);
     const [selected, setSelected] = useState(draft.graph.scenes.some((s) => s.id === sceneId) ? sceneId! : draft.graph.start),
         [playing, setPlaying] = useState(false);
@@ -197,7 +300,7 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
         config = useEffectiveConfig();
     const choice = setup.settings?.models?.text || catalog.data?.defaults.text;
 
-    const issue = filmGraphIssue(draft.graph);
+    const issue = useMemo(() => filmTrialIssue(draft.graph), [draft.graph]);
     const canContinueGraph = missingFilmScenes(draft.graph).length > 0;
     const drama = useQuery({ queryKey: ["film-production", owner, saved?.projectId], queryFn: ({ signal }) => getDrama(saved!.projectId, signal), enabled: !!saved?.projectId, refetchOnWindowFocus: true });
     function edit(patch: Partial<FilmDraft>) {
@@ -275,18 +378,42 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
             navigate(createdPath.current + (f.setup?.manualGraph ? "?mode=edit" : ""), { replace: true });
         }
     }
+    async function clearRecovery(entry = snapshot) {
+        if (!entry) return true;
+        try {
+            const latest = await draftStore.getItem<Recovery>(scope);
+            if (latest?.token === entry.token) await draftStore.removeItem(scope);
+            cache.setQueryData(["film-editor-draft", scope], latest?.token === entry.token ? null : latest);
+            setSnapshot(null);
+            return true;
+        } catch {
+            message.warning("本机草稿清理失败，请检查浏览器存储。");
+            return false;
+        }
+    }
     function save(onSaved?: () => void) {
         if (uploadingNodes.length) return Promise.resolve(false);
         return execute("save", async (signal) => {
             let f: InteractiveFilm;
             let updatingId = saved?.id;
+            if (!updatingId) firstSubmission.current ??= { key: nanoid(), draft };
+            const entry: Recovery = { draft, token: nanoid(), creationKey: firstSubmission.current?.key, record: saved && { id: saved.id, projectId: saved.projectId, takes: saved.takes, updatedAt: saved.updatedAt } };
+            let stored = false;
+            try {
+                await draftStore.setItem(scope, entry);
+                cache.setQueryData(["film-editor-draft", scope], entry);
+                setSnapshot(entry);
+                stored = true;
+            } catch {
+                message.warning("本机草稿写入失败，正在尝试保存到作品库。");
+            }
             try {
                 if (updatingId) f = await saveInteractiveFilm(draft, updatingId);
                 else {
-                    firstSubmission.current ??= { key: nanoid(), draft };
-                    f = await saveInteractiveFilm({ ...draft, creationKey: firstSubmission.current.key });
+                    const submission = firstSubmission.current!;
+                    f = await saveInteractiveFilm({ ...draft, creationKey: submission.key });
                     // A lost create response may return the original draft after the author has edited it.
-                    if (firstSubmission.current.draft !== draft) {
+                    if (submission.draft !== draft) {
                         updatingId = f.id;
                         f = await saveInteractiveFilm({ ...draft, revision: 1 }, updatingId);
                     }
@@ -297,6 +424,8 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
                 throw error;
             }
             if (signal.aborted) return;
+            cache.setQueryData(["interactive-film", owner, f.id], f);
+            await clearRecovery(stored ? entry : snapshot);
             accept(f, onSaved);
             message.success("已保存到作品库");
         });
@@ -370,11 +499,11 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
     }
     const hasUploads = uploadingNodes.length > 0;
     const canSave = !busy && !hasUploads && !!draft.title.trim() && dirty;
-    const workbenchReady = saved && !dirty && !hasUploads && !(manual ? issue : filmGraphIssue(draft.graph, true));
+    const workbenchReady = saved && !dirty && !hasUploads && canOpenFilmWorkbench(draft.graph, manual);
     return (
         <WorkspacePage fluid scroll={false}>
             <div className="drama-root film-editor">
-                {!importing && <DraftLeaveGuard changed={dirty || hasUploads} createdPath={createdPath} busy={!!busy} canSave={canSave} uploads={uploadingNodes.length} save={save} />}
+                {!importing && <DraftLeaveGuard changed={dirty || hasUploads} createdPath={createdPath} busy={!!busy} canSave={canSave} uploads={uploadingNodes.length} save={save} discard={() => clearRecovery()} />}
                 <header className="drama-topbar film-editor-bar">
                     <Button type="text" shape="circle" href={base} onClick={back} icon={<ArrowLeft className="size-4" />} aria-label="返回影游作品库" />
                     <div className="drama-topbar-title">
@@ -386,14 +515,19 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
                         ) : importing ? null : (
                             <>
                                 <span className="film-save-status" role="status">
-                                    {hasUploads ? `正在上传 ${uploadingNodes.length} 个节点素材` : dirty || !saved ? "尚未保存" : "已保存"}
+                                    {hasUploads ? `正在上传 ${uploadingNodes.length} 个节点素材` : dirty && snapshot?.draft === draft ? "本地草稿待同步" : dirty || !saved ? "尚未保存" : "已保存"}
                                 </span>
                                 <Button type={workbenchReady ? "default" : "primary"} disabled={!canSave} loading={busy === "save"} onClick={() => void save()}>
                                     保存作品
                                 </Button>
                                 {workbenchReady && (
-                                    <Button type="primary" onClick={() => openWorkbench()}>
+                                    <Button type={manual ? "default" : "primary"} onClick={() => openWorkbench()}>
                                         进入制作台
+                                    </Button>
+                                )}
+                                {manual && !!draft.graph.scenes.length && (
+                                    <Button type="primary" disabled={hasUploads || !!issue} icon={<Play size={16} />} onClick={() => setPlaying(true)}>
+                                        从入口试玩
                                     </Button>
                                 )}
                             </>
@@ -452,7 +586,8 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
                                     <div className="film-actions">
                                         <Button
                                             disabled={hasUploads || !!busy}
-                                            onClick={() => {
+                                            onClick={async () => {
+                                                if (!(await clearRecovery())) return;
                                                 accept(conflict);
                                                 setConflict(undefined);
                                                 setError("");
@@ -475,7 +610,7 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
                                     </div>
                                 </section>
                             )}
-                            <fieldset className="film-workspace" disabled={!!busy}>
+                            <fieldset className="film-workspace" data-manual={manual} disabled={!!busy}>
                                 <div className="film-right">
                                     <section className="drama-scriptv-brief film-panel">
                                         <div className="drama-section-title">
@@ -575,6 +710,8 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
                                 </div>
                                 <div className="film-right">
                                     <GraphEditor
+                                        onOpenTrack={workbenchReady ? (scene) => navigate(base + "/" + saved.id + "?" + new URLSearchParams({ scene, tab: "final" })) : undefined}
+                                        takes={saved?.takes || {}}
                                         manual={manual}
                                         graph={draft.graph}
                                         selected={selected}
@@ -591,9 +728,11 @@ function FilmStudio({ initial, owner, sceneId }: { initial?: InteractiveFilm; ow
                                         <section className="drama-scriptv-brief film-panel">
                                             {issue && <Alert type="warning" title={issue} />}
                                             <div className="film-actions">
-                                                <Button disabled={hasUploads || !!issue} icon={<Play size={16} />} onClick={() => setPlaying(true)}>
-                                                    {manual ? "从入口试玩" : "互动试玩"}
-                                                </Button>
+                                                {!manual && (
+                                                    <Button disabled={hasUploads || !!issue} icon={<Play size={16} />} onClick={() => setPlaying(true)}>
+                                                        互动试玩
+                                                    </Button>
+                                                )}
                                                 {manual && saved && !dirty && !hasUploads && !issue && <ExportDialog film={saved} episodes={drama.data?.episodes || []} />}
                                             </div>
                                             {dirty && <small>{manual ? "保存作品后可导出 H5 工程。" : "保存作品后即可送入制作台。"}</small>}

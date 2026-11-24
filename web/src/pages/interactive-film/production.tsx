@@ -10,7 +10,8 @@ import { dramaKeys } from "@/lib/drama/drama-query-keys";
 import { ApiError } from "@/services/api/request";
 import type { DramaEpisodeRow, DramaModels } from "@/services/api/drama";
 import { produceFilmScenes, saveInteractiveFilm, type InteractiveFilm } from "@/services/api/interactive-films";
-import { InteractionTrack } from "./interaction-track";
+import { InteractionTrack, type TrackDraft } from "./interaction-track";
+import { TrackDraftReview } from "./track-draft-review";
 import { ProductionStudio } from "@/pages/projects/detail";
 import { STAGE_LABEL } from "@/pages/projects/drama-shared";
 import { DramaModelPicker, useDramaModelCatalog } from "@/pages/projects/drama-model-picker";
@@ -19,7 +20,7 @@ import { useDramaSummary } from "@/pages/projects/studio/use-studio";
 import { SceneMap } from "./scene-map";
 import { filmRulesIssue } from "@/lib/film-interactions";
 
-export function FilmProduction({ film, owner }: { film: InteractiveFilm; owner: string }) {
+export function FilmProduction({ film, owner, trackScope, trackDraft, onTrackDraft }: { film: InteractiveFilm; owner: string; trackScope?: string; trackDraft?: TrackDraft | null; onTrackDraft: (draft: TrackDraft | null) => void }) {
     const [params, setParams] = useSearchParams();
     const { message, modal } = App.useApp();
     const cache = useQueryClient();
@@ -160,6 +161,26 @@ export function FilmProduction({ film, owner }: { film: InteractiveFilm; owner: 
             </aside>
         );
     }
+    function interactionTrack(resourceId: string) {
+        return (
+            <InteractionTrack
+                key={scene.id}
+                scope={trackScope}
+                onDraftChange={onTrackDraft}
+                recovery={trackDraft?.scene.id === scene.id ? trackDraft : undefined}
+                initialTime={Number(params.get("at"))}
+                film={film}
+                scene={scene}
+                episodes={summaryQuery.data?.episodes || []}
+                resourceId={resourceId}
+                save={async (updated, base) => {
+                    const record = await saveInteractiveFilm({ ...base, graph: { ...base.graph, scenes: base.graph.scenes.map((entry) => (entry.id === updated.id ? updated : entry)) } }, base.id);
+                    cache.setQueryData(["interactive-film", owner, base.id], record);
+                    return record;
+                }}
+            />
+        );
+    }
     const pendingScene = scene.media ? (
         <main className="drama-main">
             <div className="drama-scroll film-scene-preview">
@@ -175,8 +196,10 @@ export function FilmProduction({ film, owner }: { film: InteractiveFilm; owner: 
                             从这里试玩
                         </Button>
                         {take && projectId && <Link to={`/projects/${projectId}/e/${take.episodeId}`}>打开本集分镜</Link>}
+                        {scene.media.kind === "clip" && scene.media.resourceId && tab !== "final" && <Button onClick={() => setParams({ scene: scene.id, tab: "final" })}>编辑成片互动轨</Button>}
                     </div>
                 </section>
+                {scene.media.kind === "clip" && tab === "final" && interactionTrack(scene.media.resourceId || "")}
             </div>
         </main>
     ) : (
@@ -261,6 +284,16 @@ export function FilmProduction({ film, owner }: { film: InteractiveFilm; owner: 
             </WorkspacePage>
         );
     }
+    const summaryUnavailable = summaryQuery.fetchStatus === "paused" || (summaryQuery.error instanceof ApiError && (summaryQuery.error.status === undefined || summaryQuery.error.status >= 500));
+    if (trackScope && trackDraft && projectId && ((!summaryQuery.data && summaryUnavailable) || (summaryQuery.isSuccess && !scene.media && !episodeId)))
+        return (
+            <TrackDraftReview
+                scope={trackScope}
+                draft={trackDraft}
+                reason={summaryUnavailable ? "暂时无法连接短剧制作台" : "本场的制作版本已变更"}
+                retry={() => Promise.all([summaryQuery.refetch(), cache.refetchQueries({ queryKey: ["interactive-film", owner, film.id] })])}
+            />
+        );
     if (projectId)
         return (
             <ProductionStudio
@@ -275,21 +308,7 @@ export function FilmProduction({ film, owner }: { film: InteractiveFilm; owner: 
                     rail,
                     actions,
                     pendingScene,
-                    interactionTrack: (episode) => (
-                        <InteractionTrack
-                            key={scene.id + episode.finalResourceId}
-                            initialTime={Number(params.get("at"))}
-                            film={film}
-                            scene={scene}
-                            episodes={summaryQuery.data?.episodes || []}
-                            resourceId={!episode.finalStale ? episode.finalResourceId || "" : ""}
-                            save={async (updated, base) => {
-                                const record = await saveInteractiveFilm({ ...base, graph: { ...base.graph, scenes: base.graph.scenes.map((entry) => (entry.id === updated.id ? updated : entry)) } }, base.id);
-                                cache.setQueryData(["interactive-film", owner, base.id], record);
-                                return record;
-                            }}
-                        />
-                    ),
+                    interactionTrack: (episode) => (trackDraft || (episode.finalResourceId && !episode.finalStale) ? interactionTrack(!episode.finalStale ? episode.finalResourceId || "" : "") : undefined),
                     episodePath: (id, search) => {
                         const match = sceneForEpisode.get(id);
                         if (!match) return `/projects/${projectId}/e/${id}${search}`;

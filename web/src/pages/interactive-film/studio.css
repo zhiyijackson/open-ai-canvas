@@ -181,6 +181,28 @@
     min-width: 0;
     gap: 12px;
 }
+.film-workspace[data-manual="true"] {
+    grid-template-columns: minmax(0, 1fr);
+}
+.film-workspace[data-manual="true"] > .film-right:first-child .film-panel {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+.film-workspace[data-manual="true"] > .film-right:first-child label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    white-space: nowrap;
+}
+.film-workspace[data-manual="true"] > .film-right:first-child input {
+    width: min(260px, 52vw);
+}
+.film-map:has(.film-map-exit) {
+    background-image: radial-gradient(var(--drama-line) 1px, transparent 1px);
+    background-size: 16px 16px;
+}
 .film-panel label,
 .film-models label {
     display: grid;
@@ -561,6 +583,115 @@
     position: relative;
     margin-inline: auto;
 }
+.film-map-exit {
+    position: absolute;
+    display: grid;
+    align-content: center;
+    gap: 2px;
+    padding: 5px 25px 5px 10px;
+    border: 1px solid var(--drama-line);
+    border-top: 0;
+    background: var(--surface);
+    color: var(--foreground);
+    text-align: left;
+    cursor: pointer;
+}
+.film-map-exit :is(strong, span, small) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.film-map-exit strong {
+    font-size: var(--fs-label);
+}
+.film-map-exit span,
+.film-map-exit small {
+    font-size: var(--fs-tiny);
+    color: var(--drama-muted);
+}
+.film-map-exit b {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--workspace-accent);
+}
+.film-map-exit:hover,
+.film-map-exit:focus-visible {
+    background: var(--surface-hover);
+}
+.film-map-thumb {
+    width: 24px;
+    height: 18px;
+    object-fit: cover;
+}
+.film-map-sheet[data-overview="true"] {
+    display: grid;
+    padding: 8px;
+}
+.film-map-sheet[data-overview="true"] :is(.film-node, .film-map-exit) {
+    position: relative;
+    inset: auto !important;
+    width: 100% !important;
+}
+.film-map-sheet[data-overview="true"] .film-node:not(:first-of-type) {
+    margin-top: 10px;
+}
+.film-map-sheet[data-overview="true"] .film-connectors {
+    display: none;
+}
+.film-actions button[aria-pressed="true"] {
+    background: var(--workspace-accent-soft);
+}
+.film-graph-issues,
+.film-exit-monitor,
+.film-exit-properties,
+.film-exit-workbench label {
+    display: grid;
+    gap: 6px;
+    align-content: start;
+    min-width: 0;
+}
+.film-graph-issues {
+    max-height: 160px;
+    overflow: auto;
+}
+.film-graph-issues button {
+    text-align: left;
+    color: var(--foreground);
+    background: var(--drama-sunken);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    cursor: pointer;
+}
+.film-exit-workbench {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 18px;
+    margin-block: 14px;
+}
+.film-exit-properties,
+.film-exit-monitor {
+    gap: 12px;
+}
+.film-exit-monitor .film-interactive-monitor video {
+    max-height: 240px;
+    object-fit: contain;
+    background: var(--drama-sunken);
+    border-radius: var(--radius-md);
+}
+.film-exit-footer {
+    justify-content: flex-end;
+    margin-top: 14px;
+}
+@media (max-width: 640px) {
+    .film-exit-workbench {
+        grid-template-columns: 1fr;
+    }
+    .film-exit-monitor .film-interactive-monitor video {
+        max-height: 165px;
+    }
+}
 .film-map svg.film-connectors {
     position: absolute;
     inset: 0;
@@ -688,4 +819,13 @@
 .film-setup-form h3 {
     font-size: var(--fs-body);
     font-weight: 600;
+}
+.film-player button[data-rehearsal-target] {
+    outline: 2px solid var(--workspace-accent);
+    outline-offset: 2px;
+}
+.film-player button[data-rehearsal-target]::after {
+    content: "本次试玩";
+    font-size: var(--fs-tiny);
+    margin-inline-start: 0.4em;
 }

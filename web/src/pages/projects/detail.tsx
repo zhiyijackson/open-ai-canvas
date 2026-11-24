@@ -1,12 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { App, Button, Dropdown } from "antd";
+import { Alert, App, Button, Dropdown } from "antd";
 import { ArrowLeft, Brush, CheckCheck, Clapperboard, FileDown, FileUp, Inbox, Package, Pause, Pencil, Play, Settings2, UsersRound } from "lucide-react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 
 import { WorkspacePage } from "@/components/layout/workspace-page";
 import { SegmentedControl } from "@/components/ui/base/segmented-control";
 import { WorkspaceErrorState, WorkspaceLoadingState } from "@/components/layout/workspace-state";
+import { ApiError } from "@/services/api/request";
 import {
     approveDramaEpisode,
     composeDramaEpisode,
@@ -373,8 +374,15 @@ export function ProductionStudio({ projectId, routeEpisodeId, summaryQuery, film
 
     // 直接打开草稿的制作台地址时回到创建页，草稿参数都在那里编辑。
     if (summary?.production.hasDraftForm) return <Navigate to={`/projects/new?draft=${encodeURIComponent(summary.project.id)}`} replace />;
+    const summaryUnavailable = summaryQuery.error ? summaryQuery.error instanceof ApiError && (summaryQuery.error.status === undefined || summaryQuery.error.status >= 500) : summaryQuery.fetchStatus === "paused";
+    if (!summary && summaryUnavailable)
+        return (
+            <WorkspacePage>
+                <WorkspaceErrorState title="暂时无法读取作品" description="请检查连接后重新读取。" actionLabel="重新读取" onRetry={() => void summaryQuery.refetch()} />
+            </WorkspacePage>
+        );
     if (summaryQuery.isLoading) return <StudioOpening />;
-    if (summaryQuery.isError || !summary)
+    if (!summary || (summaryQuery.isError && !summaryUnavailable))
         return (
             <WorkspacePage>
                 <WorkspaceErrorState title="作品不可用" description="作品不存在、已被删除，或当前账号没有访问权限。" actionLabel="返回作品列表" onRetry={() => navigate(library)} />
@@ -520,6 +528,18 @@ export function ProductionStudio({ projectId, routeEpisodeId, summaryQuery, film
                         ) : null}
                     </div>
                 </header>
+                {summaryUnavailable && (
+                    <Alert
+                        type="warning"
+                        showIcon
+                        title="暂时无法刷新作品，当前编辑已保留在此页。"
+                        action={
+                            <Button size="small" onClick={() => void summaryQuery.refetch()}>
+                                重新读取
+                            </Button>
+                        }
+                    />
+                )}
 
                 {view === "cast" ? (
                     <section className="drama-assets-workspace" aria-label="项目资产">
@@ -761,7 +781,7 @@ export function ProductionStudio({ projectId, routeEpisodeId, summaryQuery, film
                                         />
                                     ) : (
                                         <FinalView
-                                            interactionTrack={film && detail.episode.finalResourceId && !detail.episode.finalStale ? film.interactionTrack(detail.episode) : undefined}
+                                            interactionTrack={film?.interactionTrack(detail.episode)}
                                             projectId={projectId}
                                             title={summary.project.name}
                                             detail={detail}

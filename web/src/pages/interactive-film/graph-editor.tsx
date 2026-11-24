@@ -1,18 +1,25 @@
 import { SceneMap } from "./scene-map";
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { ExitEditor } from "./exit-editor";
+import { filmEditorIssues } from "@/lib/film-editor-issues";
 import { NodeMediaEditor, EventActionEditor } from "./node-media";
 import { AppModal } from "@/components/ui/product/app-modal";
-import { insertFilmNode, newFilmMediaNode } from "@/lib/interactive-film";
+import { filmSceneResource, insertFilmNode, newFilmMediaNode } from "@/lib/interactive-film";
 import type { DramaEpisodeRow } from "@/services/api/drama";
-import { filmArrivals } from "@/lib/film-interactions";
+import { filmConnectionTargets, filmSceneLabels } from "@/lib/film-interactions";
+import { ItemNameInput } from "./item-name-input";
+import { FilmPlayer } from "./studio-player";
+import type { FilmCheckpoint } from "@/lib/film-audit";
+import { useSceneRehearsal } from "./use-scene-rehearsal";
 import { Button, Input, InputNumber, Select } from "antd";
 import { GitBranch, Plus, Trash2 } from "lucide-react";
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { nanoid } from "nanoid";
-import type { FilmGraph, FilmScene } from "@/services/api/interactive-films";
+import type { FilmGraph, FilmScene, InteractiveFilm } from "@/services/api/interactive-films";
 
 export function GraphEditor({
     graph,
+    takes,
     manual = false,
     selected,
     onSelect,
@@ -23,8 +30,10 @@ export function GraphEditor({
     uploadingNodes,
     onUpload,
     episodeId,
+    onOpenTrack,
 }: {
     graph: FilmGraph;
+    takes: InteractiveFilm["takes"];
     manual?: boolean;
     selected: string;
     onSelect: (id: string) => void;
@@ -35,22 +44,54 @@ export function GraphEditor({
     uploadingNodes: string[];
     onUpload: (scene: FilmScene, file: File, exitIndex?: number) => void;
     episodeId?: string;
+    onOpenTrack?: (id: string) => void;
 }) {
     const scene = graph.scenes.find((s) => s.id === selected) || graph.scenes[0];
     const uploading = !!scene && uploadingNodes.includes(scene.id);
     const [insertion, setInsertion] = useState<number | null>(() => (initialInsert !== null && scene?.exits[Number(initialInsert)] ? Number(initialInsert) : null));
     const event = scene?.media?.kind === "event";
-    function insert(kind: "event" | "clip") {
-        if (insertion === null) return;
+    const [editing, setEditing] = useState<number | null>(null);
+    const [related, setRelated] = useState(false),
+        [fit, setFit] = useState(false),
+        [checking, setChecking] = useState(false),
+        [deleting, setDeleting] = useState(false);
+    const [notice, setNotice] = useState("");
+    const [audition, setAudition] = useState<FilmCheckpoint[]>();
+    const rehearsal = useSceneRehearsal(graph, scene?.id, 0, "本场试玩来路");
+    const { arrival, arrivals } = rehearsal;
+    const panel = useRef<HTMLElement>(null);
+    const targets = useMemo(() => filmConnectionTargets(graph, scene?.id || ""), [graph, scene?.id]);
+    const issues = useMemo(() => (checking ? filmEditorIssues(graph, (s) => filmSceneResource(s, takes, episodes)) : []), [checking, graph, takes, episodes]);
+    function editExit(id: string, index: number) {
+        onSelect(id);
+        setEditing(index);
+    }
+    function closeExit() {
+        setEditing(null);
+        requestAnimationFrame(() => panel.current?.querySelector<HTMLButtonElement>(`.film-map-exit[data-scene="${CSS.escape(scene.id)}"][data-exit="${editing}"]`)?.focus({ preventScroll: true }));
+    }
+    function connect(id: string, index: number, target: string) {
+        if (!filmConnectionTargets(graph, id).some((s) => s.id === target)) {
+            setNotice(id === target ? "无法连接到本场。" : "这条连接会形成回环。");
+            return;
+        }
+        onChange({ ...graph, scenes: graph.scenes.map((s) => (s.id === id ? { ...s, exits: s.exits.map((e, i) => (index === i ? { ...e, id: e.id || nanoid(), target } : e)) } : s)) });
+        onSelect(id);
+        setNotice("已更新出口去向。");
+    }
+    function insert(kind: "event" | "clip", index = insertion, source = graph) {
+        if (index === null) return;
         const id = "s_" + nanoid(9);
-        const updated = insertFilmNode(graph, scene.id, insertion, id, kind);
+        const updated = insertFilmNode(source, scene.id, index, id, kind);
         setInsertion(null);
-        if (updated !== graph) {
+        if (updated !== source) {
+            setEditing(null);
             onChange(updated);
             onSelect(id);
         }
     }
-    const options = graph.scenes.map((s) => ({ value: s.id, label: s.title || s.id }));
+    const labels = useMemo(() => filmSceneLabels(graph), [graph]);
+    const options = graph.scenes.map((s) => ({ value: s.id, label: labels.get(s.id) }));
     function change(patch: Partial<FilmScene>) {
         onChange({ ...graph, scenes: graph.scenes.map((s) => (s.id === scene?.id ? { ...s, ...patch } : s)) });
     }
@@ -67,7 +108,6 @@ export function GraphEditor({
             .filter((s) => s.id !== scene.id)
             .map((s): FilmScene => {
                 if (!s.exits.some((e) => e.target === scene.id)) return s;
-                if (scene.media && scene.mode === "ending" && s.mode === "next" && !s.track?.cues.some((cue) => cue.kind === "choice")) return { ...s, mode: "ending", exits: [] };
                 return { ...s, exits: s.exits.map((e) => (e.target === scene.id ? { ...e, target: successor } : e)) };
             });
         const start = graph.start === scene.id ? successor || scenes[0]?.id || "" : graph.start;
@@ -76,10 +116,11 @@ export function GraphEditor({
     }
     function setMode(mode: FilmScene["mode"]) {
         const blank = { label: "", target: "" };
-        change({ mode, exits: mode === "ending" ? [] : mode === "next" ? [scene.exits[0] || blank] : [scene.exits[0] || blank, scene.exits[1] || blank, ...scene.exits.slice(2)] });
+        const track = scene.track && mode !== "choice" ? { ...scene.track, cues: scene.track.cues.filter((c) => c.kind !== "choice") } : scene.track;
+        change({ mode, track, exits: mode === "ending" ? [] : mode === "next" ? [scene.exits[0] || blank] : [scene.exits[0] || blank, scene.exits[1] || blank, ...scene.exits.slice(2)] });
     }
     return (
-        <section className="drama-scriptv-brief film-panel">
+        <section ref={panel} className="drama-scriptv-brief film-panel">
             <div className="drama-section-title">
                 <h2>
                     <GitBranch className="size-4" />
@@ -112,16 +153,70 @@ export function GraphEditor({
                         入口场次
                         <Select aria-label="入口场次" value={graph.start || undefined} options={options} onChange={(start) => onChange({ ...graph, start })} />
                     </label>
-                    <SceneMap graph={graph} selected={scene?.id || ""} onSelect={onSelect} onInsert={graph.scenes.length < 300 ? (_, i) => setInsertion(i) : undefined} />
+                    <div className="film-actions">
+                        <Button size="small" aria-pressed={checking} onClick={() => setChecking(!checking)}>
+                            检查剧情图
+                        </Button>
+                        <Button size="small" aria-pressed={related} onClick={() => setRelated(!related)}>
+                            仅相关连线
+                        </Button>
+                        <Button size="small" aria-pressed={fit} onClick={() => setFit(!fit)}>
+                            适合屏幕
+                        </Button>
+                    </div>
+                    {checking && (
+                        <div className="film-graph-issues" aria-live="polite">
+                            {issues.length
+                                ? issues.map((issue, i) => (
+                                      <button
+                                          type="button"
+                                          key={i}
+                                          onClick={() => {
+                                              if (issue.track && onOpenTrack) onOpenTrack(issue.scene);
+                                              else if (issue.exit !== undefined) editExit(issue.scene, issue.exit);
+                                              else {
+                                                  onSelect(issue.scene);
+                                                  requestAnimationFrame(() => panel.current?.querySelector(".film-scene")?.scrollIntoView({ block: "nearest" }));
+                                              }
+                                          }}
+                                      >
+                                          {graph.scenes.find((s) => s.id === issue.scene)?.title} · {issue.exit !== undefined && `${graph.scenes.find((s) => s.id === issue.scene)?.exits[issue.exit]?.label || `出口 ${issue.exit + 1}`} · `}
+                                          {issue.message}
+                                      </button>
+                                  ))
+                                : "剧情图检查通过"}
+                        </div>
+                    )}
+                    <SceneMap
+                        graph={graph}
+                        selected={scene?.id || ""}
+                        onSelect={onSelect}
+                        onEditExit={editExit}
+                        onConnect={connect}
+                        fit={fit}
+                        related={related}
+                        thumbnail={(id) => {
+                            const s = graph.scenes.find((s) => s.id === id);
+                            return s && filmSceneResource(s, takes, episodes);
+                        }}
+                    />
+                    {notice && <small role="status">{notice}</small>}
                 </>
             )}
             {scene && (
                 <div className="film-scene">
                     <div className="drama-section-title">
                         <h3>{event ? "互动事件" : scene.media ? "视频片段" : "场次剧本"}</h3>
-                        <Button size="small" danger type="text" disabled={uploading} onClick={remove} icon={<Trash2 size={15} />}>
+                        <Button size="small" danger type="text" disabled={uploading} onClick={() => setDeleting(true)} icon={<Trash2 size={15} />}>
                             移除场次
                         </Button>
+                    </div>
+                    <div className="film-actions">
+                        {rehearsal.controls}
+                        <Button disabled={!arrival} onClick={() => setAudition(rehearsal.history)}>
+                            从这里试玩
+                        </Button>
+                        {!arrival && <small>从入口无法到达本场</small>}
                     </div>
                     <label>
                         {scene.media ? "节点名称" : "场名"}
@@ -186,16 +281,16 @@ export function GraphEditor({
                     <details>
                         <summary>上游前情与线索回应</summary>
                         <p>各条来路在本场看到同一份剧本。当前可达的携带状态如下。</p>
-                        {filmArrivals(graph, scene.id).map((entry) => (
+                        {arrivals.map((entry) => (
                             <p key={JSON.stringify(entry)}>
-                                {graph.scenes.find((upstream) => upstream.id === entry.from)?.title} → {entry.item || "空手"}
+                                {labels.get(entry.from) || "入口"} → {entry.item || "空手"}
                             </p>
                         ))}
                         {graph.scenes
                             .filter((entry) => entry.exits.some((exit) => exit.target === scene.id))
                             .map((entry) => (
                                 <p key={entry.id}>
-                                    <strong>{entry.title}</strong>　{entry.script}
+                                    <strong>{labels.get(entry.id)}</strong>　{entry.script}
                                 </p>
                             ))}
                         <label>
@@ -205,7 +300,7 @@ export function GraphEditor({
                                 placeholder="选择热点"
                                 value={scene.clue || undefined}
                                 onChange={(clue) => change({ clue })}
-                                options={graph.scenes.flatMap((entry) => (entry.track?.cues || []).filter((cue) => cue.kind === "hotspot").map((cue) => ({ value: cue.id, label: entry.title + " · " + cue.label })))}
+                                options={graph.scenes.flatMap((entry) => (entry.track?.cues || []).filter((cue) => cue.kind === "hotspot").map((cue) => ({ value: cue.id, label: labels.get(entry.id) + " · " + cue.label })))}
                             />
                         </label>
                         {scene.clue && <Input aria-label="线索回应" placeholder="角色的补充回应" value={scene.response || ""} onChange={(event) => change({ response: event.target.value })} />}
@@ -231,7 +326,7 @@ export function GraphEditor({
                                 aria-label={`出口 ${i + 1} 目标`}
                                 placeholder="选择目标场次"
                                 value={edge.target || undefined}
-                                options={options.filter((o) => o.value !== scene.id)}
+                                options={targets.map((s) => ({ value: s.id, label: labels.get(s.id) }))}
                                 onChange={(target) => change({ exits: scene.exits.map((v, j) => (j === i ? { ...v, target } : v)) })}
                             />
                             <Button size="small" disabled={graph.scenes.length >= 300} onClick={() => setInsertion(i)}>
@@ -255,11 +350,10 @@ export function GraphEditor({
                                 {(["requiresItem", "item"] as const).map((field) => (
                                     <label key={field}>
                                         {field === "item" ? "选择后携带" : "需要持有"}
-                                        <Input
-                                            maxLength={60}
+                                        <ItemNameInput
                                             placeholder={field === "item" ? "保留当前物件" : "所有玩家可选"}
                                             value={edge[field] || ""}
-                                            onChange={(event) => change({ exits: scene.exits.map((entry, index) => (index === i ? { ...entry, [field]: event.target.value.trim() } : entry)) })}
+                                            onChange={(name) => change({ exits: scene.exits.map((entry, index) => (index === i ? { ...entry, [field]: name } : entry)) })}
                                         />
                                     </label>
                                 ))}
@@ -274,6 +368,11 @@ export function GraphEditor({
                     )}
                 </div>
             )}
+            {audition && (
+                <AppModal open title={`从这里试玩 · ${scene.title}`} width={820} onCancel={() => setAudition(undefined)} footer={<Button onClick={() => setAudition(undefined)}>返回场次</Button>}>
+                    <FilmPlayer graph={graph} episodes={episodes} takes={takes} initialHistory={audition} />
+                </AppModal>
+            )}
             <AppModal open={insertion !== null} title="插入剧情节点" footer={null} onCancel={() => setInsertion(null)}>
                 <p>
                     {scene?.title} → {graph.scenes.find((s) => s.id === scene?.exits[insertion ?? -1]?.target)?.title || "结尾"}
@@ -282,6 +381,45 @@ export function GraphEditor({
                     <Button onClick={() => insert("event")}>插入互动事件</Button>
                     <Button onClick={() => insert("clip")}>插入视频片段</Button>
                 </div>
+            </AppModal>
+            {scene && editing !== null && scene.exits[editing] && (
+                <ExitEditor
+                    key={`${scene.id}:${editing}`}
+                    scene={scene}
+                    index={editing}
+                    graph={graph}
+                    takes={takes}
+                    episodes={episodes}
+                    onApply={change}
+                    onClose={closeExit}
+                    onOpenTrack={onOpenTrack && (() => onOpenTrack(scene.id))}
+                    onInsert={(updated, kind) => insert(kind, editing, { ...graph, scenes: graph.scenes.map((entry) => (entry.id === updated.id ? updated : entry)) })}
+                />
+            )}
+            <AppModal
+                open={deleting}
+                title={`移除「${scene?.title}」？`}
+                okText="移除场次"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+                onCancel={() => setDeleting(false)}
+                onOk={() => {
+                    remove();
+                    setDeleting(false);
+                }}
+            >
+                <p>{scene?.media && scene.mode === "next" && scene.exits[0]?.target ? "下列出口将接到本场的续播目标。" : "下列出口将变为待连接，保留文案、热点和携带规则。"}</p>
+                <ul>
+                    {graph.scenes.flatMap((s) =>
+                        s.exits.map((e, i) =>
+                            e.target === scene?.id ? (
+                                <li key={`${s.id}:${i}`}>
+                                    {s.title} · {e.label || "继续"}
+                                </li>
+                            ) : null,
+                        ),
+                    )}
+                </ul>
             </AppModal>
         </section>
     );

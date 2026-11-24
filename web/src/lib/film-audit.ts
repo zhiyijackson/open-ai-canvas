@@ -1,8 +1,28 @@
-import type { FilmGraph } from "@/services/api/interactive-films";
+import type { FilmCue, FilmGraph } from "@/services/api/interactive-films";
 import { availableExits, emptyFilmState, takeFilmExit, type FilmState } from "./film-interactions";
 
-export type FilmCheckpoint = { id: string; state: FilmState; time: number; choice?: boolean; decision?: string; routeKey?: string };
+export type FilmCheckpoint = { id: string; state: FilmState; time: number; beforeEndMs?: number; choice?: boolean; decision?: string; routeKey?: string };
 export type FilmRouteCase = { key: string; ending: string; label: string; timed: boolean; history: FilmCheckpoint[] };
+
+export function sceneRehearsal(graph: FilmGraph, prior: FilmCheckpoint[], id: string, item: string, time: number, selected: string[] = []) {
+    return filmRehearsal(graph, [...prior, { id, state: { item, clues: [] }, time }], selected);
+}
+
+// A hotspot still on screen at the checkpoint belongs to live playback.
+export function filmRehearsal(graph: FilmGraph, path: FilmCheckpoint[], selected: string[]) {
+    const scenes = new Map(graph.scenes.map((scene) => [scene.id, scene]));
+    const collected = new Set<string>();
+    const optional: FilmCue[] = [];
+    const history = path.map((point) => {
+        for (const cue of scenes.get(point.id)?.track?.cues ?? []) {
+            if (cue.kind !== "hotspot" || cue.endMs === undefined || cue.endMs > point.time) continue;
+            if (!cue.wait) optional.push(cue);
+            if (cue.wait || selected.includes(cue.id)) collected.add(cue.id);
+        }
+        return { ...point, state: { ...point.state, clues: [...collected] } };
+    });
+    return { optional, history };
+}
 
 export function filmDecisionKey(scene: string, item: string, exitIndex: number, timed: boolean) {
     return JSON.stringify([scene, item, exitIndex, timed]);

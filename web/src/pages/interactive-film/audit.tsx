@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Button, Checkbox, Segmented } from "antd";
+import { Alert, Button, Segmented } from "antd";
 import { ClipboardCheck, Film, GitBranch, Play } from "lucide-react";
 import localforage from "localforage";
 import type { InteractiveFilm } from "@/services/api/interactive-films";
 import type { DramaEpisodeRow } from "@/services/api/drama";
-import { filmGraphIssue } from "@/lib/interactive-film";
-import { filmRouteCases, type FilmCheckpoint } from "@/lib/film-audit";
+import { filmTrialIssue } from "@/lib/interactive-film";
+import { useSceneRehearsal } from "./use-scene-rehearsal";
+import { filmRehearsal, filmRouteCases, type FilmCheckpoint } from "@/lib/film-audit";
+import { RehearsalClues } from "./rehearsal-clues";
 import { FilmPlayer } from "./studio-player";
 
 const records = localforage.createInstance({ name: "yingce-film-audit", storeName: "played" });
@@ -37,7 +39,7 @@ export function FilmAudit(props: Props) {
 function AuditVersion({ film, episodes, demoMedia, sampleRecords, initialPlay, scope, media, onLocate, onBack, onPlaying }: Props & { scope: string; media: string[] }) {
     const { graph } = film,
         cases = useMemo(() => filmRouteCases(graph), [graph]),
-        issue = filmGraphIssue(graph);
+        issue = useMemo(() => filmTrialIssue(graph), [graph]);
     const nodes = new Map(graph.scenes.map((s) => [s.id, s]));
     const [filter, setFilter] = useState("全部"),
         [selected, setSelected] = useState(""),
@@ -46,6 +48,7 @@ function AuditVersion({ film, episodes, demoMedia, sampleRecords, initialPlay, s
         [clues, setClues] = useState<string[]>([]);
     const [run, setRun] = useState<{ history?: FilmCheckpoint[]; start?: string } | null>(initialPlay && !issue ? { start: nodes.has(initialPlay) ? initialPlay : graph.start } : null);
     const isPlaying = !!run;
+    const sceneTrial = useSceneRehearsal(graph, run?.start, 0, "本场试玩来路");
     useEffect(() => {
         onPlaying?.(isPlaying);
         return () => onPlaying?.(false);
@@ -79,14 +82,7 @@ function AuditVersion({ film, episodes, demoMedia, sampleRecords, initialPlay, s
         current = visible.find((r) => r.key === selected) || visible[0];
     const last = current?.history.at(-1),
         source = last && nodes.get(last.id);
-    const priorClues =
-        current?.history.flatMap(
-            (p, index) =>
-                nodes
-                    .get(p.id)
-                    ?.track?.cues.filter((c) => c.kind === "hotspot" && c.atMs <= p.time)
-                    .map((c) => ({ cue: c, index })) || [],
-        ) || [];
+    const rehearsal = filmRehearsal(graph, current?.history || [], clues);
     const problems = graph.scenes.flatMap((s, i) => {
         if (s.media?.kind === "event") return [];
         const cues = s.track?.cues || [];
@@ -95,7 +91,7 @@ function AuditVersion({ film, episodes, demoMedia, sampleRecords, initialPlay, s
     });
     function audition() {
         if (!current) return;
-        setRun({ history: current.history.map((p, i) => ({ ...p, state: { ...p.state, clues: priorClues.filter((c) => c.index <= i && clues.includes(c.cue.id)).map((c) => c.cue.id) } })) });
+        setRun({ history: rehearsal.history });
     }
     if (run)
         return (
@@ -105,7 +101,18 @@ function AuditVersion({ film, episodes, demoMedia, sampleRecords, initialPlay, s
                     <Button onClick={() => setRun(null)}>退出试玩</Button>
                 </div>
                 <div className="film-audit-scroll">
-                    <FilmPlayer graph={graph} takes={film.takes} episodes={episodes} demoMedia={demoMedia} start={run.start} initialHistory={run.history} onEnding={record} onAudit={() => setRun(null)} onLocate={(id, t) => onLocate(id, t || 0)} />
+                    {run.start && sceneTrial.controls}
+                    <FilmPlayer
+                        key={run.start ? JSON.stringify(sceneTrial.history) : undefined}
+                        graph={graph}
+                        takes={film.takes}
+                        episodes={episodes}
+                        demoMedia={demoMedia}
+                        initialHistory={run.history || sceneTrial.history}
+                        onEnding={record}
+                        onAudit={() => setRun(null)}
+                        onLocate={(id, t) => onLocate(id, t || 0)}
+                    />
                 </div>
             </main>
         );
@@ -189,11 +196,7 @@ function AuditVersion({ film, episodes, demoMedia, sampleRecords, initialPlay, s
                                 <span>
                                     {current.timed ? "等候超时默认选择" : "预期行动"} · {current.label}
                                 </span>
-                                {priorClues.map(({ cue }) => (
-                                    <Checkbox key={cue.id} checked={clues.includes(cue.id)} onChange={(e) => setClues((old) => (e.target.checked ? [...old, cue.id] : old.filter((id) => id !== cue.id)))}>
-                                        带入「{cue.label}」线索
-                                    </Checkbox>
-                                ))}
+                                <RehearsalClues cues={rehearsal.optional} selected={clues} onChange={setClues} />
                                 <Button type="primary" icon={<Play size={14} />} disabled={!!issue} onClick={audition}>
                                     {source.track?.cues.some((c) => c.kind === "choice") ? "从选择点前 2 秒试演" : "从本场试演"}
                                 </Button>

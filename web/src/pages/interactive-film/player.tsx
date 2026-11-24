@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Checkbox, Select } from "antd";
 import type { DramaEpisodeRow } from "@/services/api/drama";
 import type { FilmCue, FilmExit, FilmGraph, FilmScene, InteractiveFilm } from "@/services/api/interactive-films";
-import { availableExits, emptyFilmState, filmArrivals, filmTrackIssue, inspectFilmCue, takeFilmExit, type FilmState } from "@/lib/film-interactions";
-import { useFilmMediaUrl } from "./film-media";
-import { filmDecisionKey, type FilmCheckpoint as Checkpoint } from "@/lib/film-audit";
+import { availableExits, emptyFilmState, filmRoutes, filmTrackIssue, inspectFilmCue, takeFilmExit, videoHasChoiceOverlay, type FilmState } from "@/lib/film-interactions";
+import { useFilmMedia, useFilmMediaUrl } from "./film-media";
+import { filmEventBackdrop, filmSceneResource } from "@/lib/interactive-film";
+import { filmDecisionKey, sceneRehearsal, type FilmCheckpoint as Checkpoint } from "@/lib/film-audit";
 import { BookOpen, Ellipsis, Pause, Play } from "lucide-react";
 import { FilmNotebook } from "./notebook";
 import { EventFrame } from "./event-frame";
+import { ChoiceOptions } from "./choice-options";
 
 export type PlayerProps = {
     posters?: Record<string, string>;
@@ -22,12 +24,19 @@ export type PlayerProps = {
     demoMedia?: Record<string, string>;
     onLocate?: (id: string, time?: number) => void;
     initialHistory?: Checkpoint[];
+    rehearsalExit?: { scene: string; exit: string };
     onEnding?: (key: string, ending: string) => void;
     onAudit?: () => void;
 };
 
-export function FilmPlayer({ graph, takes, episodes, start, time = 0, demoMedia, onLocate, initialHistory, onEnding, onAudit, audience, sceneResources, posters, stills }: PlayerProps) {
-    const [history, setHistory] = useState<Checkpoint[]>(() => initialHistory || [{ id: start || graph.start, state: { item: start && start !== graph.start ? filmArrivals(graph, start)[0]?.item || "" : "", clues: [] }, time }]);
+export function FilmPlayer({ graph, takes, episodes, start, time = 0, demoMedia, onLocate, initialHistory, rehearsalExit, onEnding, onAudit, audience, sceneResources, posters, stills }: PlayerProps) {
+    const routes = useMemo(() => (audience ? undefined : filmRoutes(graph)), [audience, graph]);
+    const [history, setHistory] = useState<Checkpoint[]>(() => {
+        if (initialHistory?.length) return initialHistory;
+        const id = start || graph.start;
+        const arrival = routes?.arrivals(id)[0];
+        return routes && arrival ? sceneRehearsal(graph, routes.history(arrival.parent), id, arrival.item, time).history : [{ id, state: emptyFilmState, time }];
+    });
     const [generation, setGeneration] = useState(0);
     const [analysis, setAnalysis] = useState(false);
     const [notebook, setNotebook] = useState(false);
@@ -38,31 +47,27 @@ export function FilmPlayer({ graph, takes, episodes, start, time = 0, demoMedia,
     const [wait, setWait] = useState(false);
     const [noTimer, setNoTimer] = useState(false);
     const [textMode, setTextMode] = useState(false);
+    const [viewed, setViewed] = useState("");
     const [still, setStill] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     const current = history[history.length - 1];
     const scene = graph.scenes.find((entry) => entry.id === current.id)!;
-    const arrivals = useMemo(() => filmArrivals(graph, scene.id), [graph, scene.id]);
+    const markedExit = !audience && rehearsalExit?.scene === scene.id ? rehearsalExit.exit : undefined;
+    const arrivals = scene.id === graph.start ? [] : routes?.arrivals(scene.id) || [];
+    const resource = sceneResources?.[scene.id] || filmSceneResource(scene, takes, episodes);
+    const visit = `${generation}:${history.length}:${current.id}`;
     useEffect(() => {
         if (scene.mode !== "ending") return;
+        if (scene.media?.kind !== "event" && (resource || demoMedia?.[scene.id]) && viewed !== visit) return;
         const decision = [...history].reverse().find((point) => point.routeKey);
         if (decision?.routeKey) onEnding?.(decision.routeKey, scene.id);
         else if (history[0].id === graph.start) onEnding?.(JSON.stringify(["linear", scene.id]), scene.id);
-    }, [history, scene, graph.start, onEnding]);
-    const take = takes[scene.id],
-        episode = episodes.find((entry) => entry.id === take?.episodeId);
-    const resource = sceneResources?.[scene.id] || (scene.media?.kind === "clip" ? scene.media.resourceId : episode && !episode.finalStale && take?.script === scene.script ? episode.finalResourceId : undefined);
+    }, [history, scene, graph.start, onEnding, viewed, visit, resource, demoMedia]);
     const priorIds = history
         .slice(0, -1)
         .map((point) => point.id)
         .reverse();
-    if (!priorIds.length) {
-        const parents = graph.scenes.filter((entry) => entry.exits.some((e) => e.target === scene.id));
-        if (parents.length === 1) priorIds.push(parents[0].id);
-    }
-    const backdrop = scene.media?.kind === "event" && !scene.media.resourceId ? priorIds.map((id) => graph.scenes.find((s) => s.id === id)).find((s) => s && (s.media?.resourceId || s.media?.kind !== "event")) : undefined;
-    const priorTake = backdrop && takes[backdrop.id];
-    const priorEpisode = episodes.find((e) => e.id === priorTake?.episodeId);
-    const priorResource = backdrop && (sceneResources?.[backdrop.id] || backdrop.media?.resourceId || (priorTake?.script === backdrop.script && !priorEpisode?.finalStale ? priorEpisode?.finalResourceId : undefined));
+    const backdrop = filmEventBackdrop(graph, scene, priorIds);
+    const priorResource = backdrop && (sceneResources?.[backdrop.id] || filmSceneResource(backdrop, takes, episodes));
     const poster = backdrop && posters?.[backdrop.id];
     const priorUrl = useFilmMediaUrl(poster ? undefined : priorResource, backdrop?.media?.kind === "event" ? "original" : "playback");
     const eventImage = useFilmMediaUrl(audience && scene.media?.kind === "event" ? scene.media.resourceId : undefined);
@@ -83,13 +88,26 @@ export function FilmPlayer({ graph, takes, episodes, start, time = 0, demoMedia,
         setHistory([...history.slice(0, index), { ...history[index], decision: undefined }]);
         setGeneration((value) => value + 1);
     }
+    function canFollow(edge: FilmExit) {
+        const connected = graph.scenes.some((s) => s.id === edge.target);
+        setScreenMessage(connected ? "" : `「${edge.label || "继续"}」尚未连接目标场次`);
+        return connected;
+    }
     function follow(edge: FilmExit, state: FilmState, at: number, timed?: boolean) {
         setHistory((previous) =>
             previous[previous.length - 1] !== current
                 ? previous
                 : [
                       ...previous.slice(0, -1),
-                      { ...current, state, time: at, choice: scene.mode === "choice", decision: edge.label, routeKey: scene.mode === "choice" ? filmDecisionKey(scene.id, state.item, scene.exits.indexOf(edge), !!timed) : undefined },
+                      {
+                          ...current,
+                          state,
+                          time: at,
+                          beforeEndMs: undefined,
+                          choice: scene.mode === "choice",
+                          decision: edge.label,
+                          routeKey: scene.mode === "choice" ? filmDecisionKey(scene.id, state.item, scene.exits.indexOf(edge), !!timed) : undefined,
+                      },
                       { id: edge.target, state: takeFilmExit(state, edge), time: 0 },
                   ],
         );
@@ -148,6 +166,7 @@ export function FilmPlayer({ graph, takes, episodes, start, time = 0, demoMedia,
             />
             {scene.media?.kind === "event" ? (
                 <EventFrame
+                    markedExit={markedExit}
                     key={`${generation}:${history.length}:${scene.id}`}
                     scene={scene}
                     onReplay={audience ? replayChoice : undefined}
@@ -156,10 +175,12 @@ export function FilmPlayer({ graph, takes, episodes, start, time = 0, demoMedia,
                     suspended={notebook || menuOpen}
                     noTimer={noTimer}
                     exits={availableExits(scene, current.state.item)}
+                    canFollow={canFollow}
                     onAction={(edge) => follow(edge, current.state, 0)}
                 />
             ) : (
                 <Playback
+                    markedExit={markedExit}
                     key={generation + ":" + history.length + ":" + current.id + ":" + textMode + ":" + (resource || "")}
                     onReplay={audience ? replayChoice : undefined}
                     checkpoint={current}
@@ -180,9 +201,12 @@ export function FilmPlayer({ graph, takes, episodes, start, time = 0, demoMedia,
                         })
                     }
                     onExit={follow}
+                    canFollow={canFollow}
+                    onWatched={() => setViewed(visit)}
                 />
             )}
             {scene.clue && current.state.clues.includes(scene.clue) && <p className="film-arrival-response">{scene.response}</p>}
+            {!audience && screenMessage && <p role="status">{screenMessage}</p>}
             {demoMedia?.[scene.id] && !textMode && <p className="film-caption">{scene.script}</p>}
             {!audience && scene.mode === "ending" && (
                 <section className="film-panel">
@@ -260,8 +284,13 @@ export function FilmPlayer({ graph, takes, episodes, start, time = 0, demoMedia,
                             <Select<number>
                                 placeholder="选取来路"
                                 value={undefined}
-                                options={arrivals.map(({ from, item }, index) => ({ value: index, label: (graph.scenes.find((entry) => entry.id === from)?.title || from) + " · " + (item || "空手") }))}
-                                onChange={(index) => reset({ id: scene.id, time: 0, state: { item: arrivals[index].item, clues: [] } })}
+                                options={arrivals.map((a, index) => ({ value: index, label: routes?.arrivalLabel(a) }))}
+                                onChange={(index) => {
+                                    const arrival = arrivals[index];
+                                    if (!routes || !arrival) return;
+                                    setHistory(sceneRehearsal(graph, routes.history(arrival.parent), scene.id, arrival.item, 0).history);
+                                    setGeneration((value) => value + 1);
+                                }}
                             />
                         </label>
                     )}
@@ -291,6 +320,7 @@ export function FilmPlayer({ graph, takes, episodes, start, time = 0, demoMedia,
 }
 
 function Playback({
+    markedExit,
     onReplay,
     scene,
     checkpoint,
@@ -305,7 +335,10 @@ function Playback({
     onLocate,
     onInspect,
     onExit,
+    canFollow,
+    onWatched,
 }: {
+    markedExit?: string;
     scene: FilmScene;
     onReplay?: () => void;
     checkpoint: Checkpoint;
@@ -320,15 +353,19 @@ function Playback({
     onLocate?: PlayerProps["onLocate"];
     onInspect: (cue: FilmCue) => void;
     onExit: (exit: FilmExit, state: FilmState, at: number, timed?: boolean) => void;
+    canFollow: (exit: FilmExit) => boolean;
+    onWatched: () => void;
 }) {
     const video = useRef<HTMLVideoElement>(null);
     const committed = useRef(false);
     const resumeAfterNotebook = useRef(false);
     const handled = useRef(new Set<string>());
     const state = checkpoint.state;
-    const resolved = useFilmMediaUrl(resource, "playback");
-    const url = sampleUrl || resolved;
-    const loading = !!resource && !url;
+    const [attempt, setAttempt] = useState(0);
+    const [textOnly, setTextOnly] = useState(false);
+    const resolved = useFilmMedia(resource, "playback", attempt);
+    const url = sampleUrl || resolved?.url;
+    const loading = !!resource && !url && !resolved;
     const [failed, setFailed] = useState(false);
     const [duration, setDuration] = useState<number>();
     const [active, setActive] = useState<FilmCue>();
@@ -340,14 +377,15 @@ function Playback({
     const track = scene.track;
     const mismatch = track?.cues?.length && mediaVersion && mediaVersion !== track.resourceId;
     const problem = filmTrackIssue(scene, track, duration ?? track?.durationMs);
-    const videoMode = !!url && !mismatch && !problem && !failed;
+    const loadError = failed || (!!resource && !!resolved && !url);
+    const videoMode = !!url && !mismatch && !problem && !loadError && !textOnly;
     const exits = availableExits(scene, state.item);
     const choice = track?.cues?.find((cue) => cue.kind === "choice");
     const mustInspect = track?.cues?.some((cue) => cue.kind === "hotspot" && (cue.wait || wait) && !state.clues.includes(cue.id));
-    const optionsVisible = (!videoMode && (!loading || failed) && !mustInspect) || finished || active?.kind === "choice";
+    const optionsVisible = (!videoMode && (!loading || textOnly) && !mustInspect) || finished || active?.kind === "choice";
     const chooseRef = useRef<(edge: FilmExit, timed?: boolean) => void>(() => {});
     function choose(edge: FilmExit, timed = false) {
-        if (committed.current) return;
+        if (committed.current || !canFollow(edge)) return;
         committed.current = true;
         if (videoMode && active?.kind === "choice" && active.tail && !finished) {
             setPending({ edge, timed });
@@ -396,6 +434,7 @@ function Playback({
             prior = now;
             setRemaining(Math.max(0, rest));
             if (rest <= 0) {
+                window.clearInterval(timer);
                 const edge = exits.find((entry) => entry.id === active.defaultExit);
                 if (edge) chooseRef.current(edge, true);
             }
@@ -451,7 +490,6 @@ function Playback({
     const canPause = !optionsVisible && (!active || active.kind === "caption" || !(wait || active.wait));
     const controls = (
         <div className="film-actions">
-            {optionsVisible && !pending && choice?.question?.trim() && <strong className="film-choice-question">{choice.question}</strong>}
             {optionsVisible &&
                 !pending &&
                 (scene.mode === "ending" ? (
@@ -460,13 +498,9 @@ function Playback({
                         {onReplay && <h2 className="film-ending-title">{scene.title}</h2>}
                         {onReplay && <Button onClick={onReplay}>重新选择</Button>}
                     </>
-                ) : (
-                    exits.map((exit, index) => (
-                        <Button key={exit.id || index} onClick={() => choose(exit)}>
-                            {exit.label || "继续"}
-                        </Button>
-                    ))
-                ))}
+                ) : !videoMode || videoHasChoiceOverlay(scene) ? (
+                    <ChoiceOptions question={choice?.question} exits={exits} onChoose={choose} markedExit={markedExit} />
+                ) : null)}
             {active?.kind === "choice" && !!active.timeoutMs && !noTimer && (
                 <Button onClick={() => setPaused(!paused)}>
                     {paused ? "恢复" : "暂停"}倒计时 · {Math.ceil(remaining / 1000)} 秒
@@ -474,7 +508,40 @@ function Playback({
             )}
         </div>
     );
-    if (onReplay && loading && !failed)
+    if ((loadError || mismatch || problem) && !textOnly)
+        return (
+            <div className="film-media-recovery">
+                <Alert type="warning" title={`「${scene.title}」${problem || (mismatch ? "成片版本已更新，请复核互动轨" : "视频加载失败")}`} />
+                {loadError && (
+                    <Button
+                        onClick={() => {
+                            setAttempt(attempt + 1);
+                            setFailed(false);
+                            setFinished(false);
+                            setFeedback("");
+                            setActive(undefined);
+                            setPending(undefined);
+                            committed.current = false;
+                            handled.current.clear();
+                        }}
+                    >
+                        重试视频
+                    </Button>
+                )}
+                <Button
+                    onClick={() => {
+                        if (pending) {
+                            onExit(pending.edge, state, choice?.atMs || 0, pending.timed);
+                            return;
+                        }
+                        setTextOnly(true);
+                    }}
+                >
+                    仅用文字走剧情
+                </Button>
+            </div>
+        );
+    if (onReplay && loading && !textOnly)
         return (
             <p className="film-loading" role="status">
                 正在载入下一幕…
@@ -482,18 +549,7 @@ function Playback({
         );
     return (
         <>
-            {failed && (
-                <Button
-                    onClick={() => {
-                        setFailed(false);
-                        setActive(undefined);
-                        setFeedback("");
-                    }}
-                >
-                    重试视频
-                </Button>
-            )}
-            {!!(mismatch || problem || failed) && <Alert type="warning" title={(problem || (failed ? "视频加载失败" : "成片版本已更新，请复核互动轨")) + " · 当前为文字试玩"} />}
+            {!videoMode && (!loading || textOnly) && <p role="status">文字试玩</p>}
             {videoMode ? (
                 <>
                     <div className="film-interactive-monitor">
@@ -506,25 +562,24 @@ function Playback({
                             onLoadedMetadata={(event) => {
                                 const element = event.currentTarget;
                                 element.parentElement?.style.setProperty("--film-aspect", String(element.videoWidth / element.videoHeight));
-                                setDuration(Math.round(element.duration * 1000));
-                                element.currentTime = Math.min(checkpoint.time / 1000, element.duration);
-                                for (const cue of track?.cues || []) if (cue.kind === "hotspot" && (cue.endMs! <= checkpoint.time || checkpoint.state.clues.includes(cue.id))) handled.current.add(cue.id);
+                                const durationMs = Math.round(element.duration * 1000);
+                                const startMs = checkpoint.beforeEndMs === undefined ? checkpoint.time : Math.max(0, durationMs - checkpoint.beforeEndMs);
+                                setDuration(durationMs);
+                                element.currentTime = Math.min(startMs / 1000, element.duration);
+                                for (const cue of track?.cues || []) if (cue.kind === "hotspot" && (cue.endMs! <= startMs || checkpoint.state.clues.includes(cue.id))) handled.current.add(cue.id);
                                 if (checkpoint.choice && !choice) {
                                     setFinished(true);
                                     return;
                                 }
-                                if (!tick(checkpoint.time)) resume();
+                                if (!tick(startMs)) resume();
                             }}
                             onTimeUpdate={(event) => tick(Math.round(event.currentTarget.currentTime * 1000))}
                             onError={() => {
-                                if (pending) {
-                                    onExit(pending.edge, state, choice?.atMs || 0, pending.timed);
-                                    return;
-                                }
                                 setFailed(true);
                                 setActive(undefined);
                             }}
                             onEnded={() => {
+                                if (scene.mode === "ending") onWatched();
                                 if (pending) {
                                     onExit(pending.edge, state, choice?.atMs || 0, pending.timed);
                                     return;
@@ -559,8 +614,8 @@ function Playback({
             ) : (
                 <>
                     <p className="film-script">{scene.script}</p>
-                    {loading && !failed ? (
-                        <Button onClick={() => setFailed(true)}>使用文字试玩</Button>
+                    {loading && !textOnly ? (
+                        <Button onClick={() => setTextOnly(true)}>使用文字试玩</Button>
                     ) : (
                         <>
                             {track?.cues

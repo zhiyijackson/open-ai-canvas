@@ -1,9 +1,12 @@
-import { useEffect, useId, useMemo, useRef } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Dropdown } from "antd";
 import { ArrowDown, Flag, GitBranch, GitMerge, LogIn } from "lucide-react";
 import type { FilmGraph } from "@/services/api/interactive-films";
+import { MediaThumb } from "@/pages/projects/drama-shared";
+import { filmSceneLabels } from "@/lib/film-interactions";
 
-function layout(graph: FilmGraph, vertical: boolean) {
+const exitHeight = 66;
+function layout(graph: FilmGraph, vertical: boolean, detailed: boolean) {
     const inbound = new Map(graph.scenes.map((s) => [s.id, 0]));
     for (const s of graph.scenes) for (const exit of s.exits) if (inbound.has(exit.target)) inbound.set(exit.target, inbound.get(exit.target)! + 1);
     const merges = new Set(
@@ -30,22 +33,25 @@ function layout(graph: FilmGraph, vertical: boolean) {
         group.push(scene.id);
         levels.set(level, group);
     }
-    const nodeWidth = vertical ? 120 : 156;
+    const nodeWidth = detailed ? 234 : vertical ? 120 : 156;
     const nodeHeight = 54;
     const stepX = nodeWidth + (vertical ? 12 : 50);
     const stepY = nodeHeight + 32;
     const ranks = Math.max(0, ...levels.keys()) + 1;
     const lanes = Math.max(1, ...Array.from(levels.values(), (group) => group.length));
     const width = (vertical ? lanes : ranks) * stepX + 12;
-    const height = (vertical ? ranks : lanes) * stepY;
+    let height = (vertical ? ranks : lanes) * stepY;
     const points = new Map<string, { x: number; y: number }>();
     for (const [level, group] of levels) {
-        group.forEach((id, lane) =>
+        let top = 12;
+        group.forEach((id, lane) => {
             points.set(id, {
                 x: 8 + (vertical ? lane + (lanes - group.length) / 2 : level) * stepX,
-                y: 12 + (vertical ? level : lane) * stepY,
-            }),
-        );
+                y: detailed ? top : 12 + (vertical ? level : lane) * stepY,
+            });
+            if (detailed) top += stepY + exitHeight * byId.get(id)!.exits.length;
+        });
+        if (detailed) height = Math.max(height, top);
     }
     return { points, width, height, nodeWidth, nodeHeight, merges };
 }
@@ -57,6 +63,11 @@ export function SceneMap({
     onInsert,
     vertical = false,
     status,
+    onEditExit,
+    onConnect,
+    related = false,
+    fit = false,
+    thumbnail,
 }: {
     graph: FilmGraph;
     selected: string;
@@ -64,8 +75,17 @@ export function SceneMap({
     onInsert?: (id: string, exit: number) => void;
     vertical?: boolean;
     status?: (id: string) => string;
+    onEditExit?: (id: string, index: number) => void;
+    onConnect?: (source: string, index: number, target: string) => void;
+    related?: boolean;
+    fit?: boolean;
+    thumbnail?: (id: string) => string | undefined;
 }) {
-    const { points, width, height, nodeWidth, nodeHeight, merges } = useMemo(() => layout(graph, vertical), [graph, vertical]);
+    const detailed = !!onEditExit;
+    const { points, width, height, nodeWidth, nodeHeight, merges } = useMemo(() => layout(graph, vertical, detailed), [graph, vertical, detailed]);
+    const titles = useMemo(() => filmSceneLabels(graph), [graph]);
+    const drag = useRef<{ id: string; index: number } | null>(null);
+    const [viewportWidth, setViewportWidth] = useState(0);
     const marker = useId();
     const source = graph.scenes.find((scene) => scene.id === selected);
     const exitsByTarget = new Map<string, number[]>();
@@ -77,6 +97,15 @@ export function SceneMap({
         });
     const current = useRef<HTMLButtonElement>(null);
     const viewport = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        const el = viewport.current;
+        if (!el || !fit) return;
+        const observer = new ResizeObserver(() => setViewportWidth(el.clientWidth));
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [fit]);
+    const ratio = fit && viewportWidth ? Math.min(1, viewportWidth / width) : 1;
+    const overview = fit && ratio < 0.7;
     useEffect(() => {
         const el = current.current,
             box = viewport.current;
@@ -95,7 +124,7 @@ export function SceneMap({
     }, [selected, vertical, points]);
     return (
         <div ref={viewport} className="film-map" aria-label="场次连线图">
-            <div className="film-map-sheet" style={{ width, height }}>
+            <div className="film-map-sheet" data-overview={overview} style={overview ? undefined : { width, height, zoom: ratio }}>
                 <svg className="film-connectors" width={width} height={height} aria-hidden="true">
                     <defs>
                         <marker id={marker} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
@@ -106,9 +135,9 @@ export function SceneMap({
                         scene.exits.map((exit, i) => {
                             const from = points.get(scene.id)!,
                                 to = points.get(exit.target);
-                            if (!to) return null;
+                            if (!to || (related && scene.id !== selected && exit.target !== selected)) return null;
                             const x = from.x + (vertical ? nodeWidth / 2 : nodeWidth),
-                                y = from.y + (vertical ? nodeHeight : nodeHeight / 2);
+                                y = from.y + (detailed ? nodeHeight + (i + 0.5) * exitHeight : vertical ? nodeHeight : nodeHeight / 2);
                             const endX = to.x + (vertical ? nodeWidth / 2 : 0),
                                 endY = to.y + (vertical ? 0 : nodeHeight / 2);
                             const midX = (x + endX) / 2,
@@ -156,24 +185,73 @@ export function SceneMap({
                     const point = points.get(scene.id)!;
                     const kind = scene.id === graph.start ? "入口" : scene.mode === "choice" ? "选择" : scene.mode === "ending" ? "结局" : merges.has(scene.id) ? "汇合" : "续播";
                     const Icon = { 入口: LogIn, 选择: GitBranch, 结局: Flag, 汇合: GitMerge, 续播: ArrowDown }[kind];
+                    const choice = scene.track?.cues.find((c) => c.kind === "choice");
+                    const image = thumbnail?.(scene.id);
                     return (
-                        <button
-                            type="button"
-                            key={scene.id}
-                            ref={scene.id === selected ? current : undefined}
-                            className="film-node"
-                            aria-pressed={scene.id === selected}
-                            onClick={() => onSelect(scene.id)}
-                            style={{ left: point.x, top: point.y, width: nodeWidth, height: nodeHeight }}
-                            title={scene.title}
-                        >
-                            <small>
-                                <Icon className="size-3 shrink-0" aria-hidden="true" />
-                                {scene.media ? (scene.media.kind === "event" ? "互动事件" : "视频片段") : kind}
-                                {status && " · " + status(scene.id)}
-                            </small>
-                            <strong>{scene.title || "未命名"}</strong>
-                        </button>
+                        <Fragment key={scene.id}>
+                            <button
+                                type="button"
+                                key={scene.id}
+                                ref={scene.id === selected ? current : undefined}
+                                className="film-node"
+                                onDragOver={(e) => {
+                                    if (drag.current) e.preventDefault();
+                                }}
+                                onDrop={(e) => {
+                                    if (drag.current) {
+                                        e.preventDefault();
+                                        onConnect?.(drag.current.id, drag.current.index, scene.id);
+                                        drag.current = null;
+                                    }
+                                }}
+                                aria-pressed={scene.id === selected}
+                                onClick={() => onSelect(scene.id)}
+                                style={{ left: point.x, top: point.y, width: nodeWidth, height: nodeHeight }}
+                                title={titles.get(scene.id)}
+                            >
+                                <small>
+                                    <Icon className="size-3 shrink-0" aria-hidden="true" />
+                                    {image && <MediaThumb className="film-map-thumb" resourceId={image} alt="" />}
+                                    {scene.media ? (scene.media.kind === "event" ? "图片 / GIF 事件" : "视频片段") : kind}
+                                    {detailed && scene.media && (scene.id === graph.start ? " · 入口" : scene.mode === "ending" ? " · 结局" : merges.has(scene.id) ? " · 汇合" : "")}
+                                    {detailed && scene.mode === "choice" && (scene.media?.kind === "event" ? " · 入场选择" : choice ? ` · 第 ${choice.atMs / 1000} 秒选择` : " · 片尾选择")}
+                                    {status && " · " + status(scene.id)}
+                                </small>
+                                <strong>{titles.get(scene.id)}</strong>
+                            </button>
+                            {onEditExit &&
+                                scene.exits.map((exit, i) => {
+                                    const rules = [exit.requiresItem && `需持有 ${exit.requiresItem}`, exit.item && `获得 ${exit.item}`, choice?.timeoutMs && exit.id && exit.id === choice.defaultExit ? `${choice.timeoutMs / 1000} 秒默认` : ""]
+                                        .filter(Boolean)
+                                        .join(" · ");
+                                    return (
+                                        <button
+                                            type="button"
+                                            className="film-map-exit"
+                                            key={i}
+                                            data-scene={scene.id}
+                                            data-exit={i}
+                                            style={{ left: point.x, top: point.y + nodeHeight + i * exitHeight, width: nodeWidth, height: exitHeight }}
+                                            draggable
+                                            onDragStart={(e) => {
+                                                drag.current = { id: scene.id, index: i };
+                                                e.dataTransfer.setData("text/plain", exit.label || "出口");
+                                                e.dataTransfer.effectAllowed = "link";
+                                            }}
+                                            onDragEnd={() => {
+                                                drag.current = null;
+                                            }}
+                                            onClick={() => onEditExit(scene.id, i)}
+                                            title={[exit.label, titles.get(exit.target), rules].filter(Boolean).join(" · ")}
+                                        >
+                                            <strong>{exit.label || (scene.mode === "choice" ? `选项 ${i + 1}` : "继续")}</strong>
+                                            <span>→ {titles.get(exit.target) || "待连接"}</span>
+                                            {rules && <small>{rules}</small>}
+                                            <b aria-hidden="true">＋</b>
+                                        </button>
+                                    );
+                                })}
+                        </Fragment>
                     );
                 })}
             </div>

@@ -14,6 +14,15 @@ func TestFilmTrackValidatesAllArrivals(t *testing.T) {
 	if err := ValidateFilmGraph(graph); err != nil {
 		t.Fatal(err)
 	}
+	graph.Scenes[0].Clue = "ticket"
+	if err := ValidateFilmGraph(graph); err == nil {
+		t.Fatal("opening cannot respond to a future clue")
+	}
+	graph.Scenes[0].Clue = ""
+	graph.Scenes[1].Clue = "ticket"
+	if err := ValidateFilmGraph(graph); err != nil {
+		t.Fatal("a hotspot can trigger a response in its own scene:", err)
+	}
 	track := graph.Scenes[1].Track
 	track.Cues[1].DefaultExit = "sign"
 	if ValidateFilmGraph(graph) == nil {

@@ -105,8 +105,8 @@ func (s *Service) SaveInteractiveFilm(userID, id string, req FilmDraftRequest) (
 			if media.Kind != "event" && media.Kind != "clip" {
 				return nil, BadAuthRequest("未知的节点类型")
 			}
-			if scene.Track != nil {
-				return nil, BadAuthRequest("独立节点不能绑定场次互动轨")
+			if media.Kind == "event" && scene.Track != nil {
+				return nil, BadAuthRequest("图片事件在入场时触发，不能绑定视频互动轨")
 			}
 			if media.ResourceID != "" {
 				resource, err := s.repo.FilmNodeResource(userID, media.ResourceID)

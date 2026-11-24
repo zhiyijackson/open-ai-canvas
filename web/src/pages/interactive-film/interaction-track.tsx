@@ -1,15 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useBlocker } from "react-router";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { Alert, Button, Checkbox, Input, InputNumber, Select } from "antd";
 import { nanoid } from "nanoid";
 import type { FilmCue, FilmScene, InteractiveFilm } from "@/services/api/interactive-films";
 import type { DramaEpisodeRow } from "@/services/api/drama";
-import { filmTrackIssue, orderedTrack, filmRulesIssue, filmArrivals } from "@/lib/film-interactions";
+import { filmTrackIssue, orderedTrack, filmRulesIssue, MAX_FILM_CUES } from "@/lib/film-interactions";
+import { useSceneRehearsal } from "./use-scene-rehearsal";
 import { useResourceMediaUrl } from "@/pages/projects/drama-shared";
 import { FilmPlayer } from "./studio-player";
 import { getInteractiveFilm } from "@/services/api/interactive-films";
+import { getDrama } from "@/services/api/drama";
+import { filmSceneResource } from "@/lib/interactive-film";
 import { ApiError } from "@/services/api/request";
+import { useQueryClient } from "@tanstack/react-query";
+import { filmDraftStorage } from "./draft-storage";
+import { ItemNameInput } from "./item-name-input";
 
 function Seconds({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
     return (
@@ -29,35 +35,95 @@ function Seconds({ label, value, onChange }: { label: string; value: number; onC
     );
 }
 
-type Props = { film: InteractiveFilm; scene: FilmScene; resourceId: string; episodes: DramaEpisodeRow[]; save: (scene: FilmScene, base: InteractiveFilm) => Promise<InteractiveFilm>; demoMedia?: Record<string, string>; initialTime?: number };
-export function InteractionTrack({ film, scene, resourceId, episodes, save, demoMedia, initialTime = 0 }: Props) {
-    const resolved = useResourceMediaUrl(demoMedia ? undefined : resourceId, "playback");
+export type TrackDraft = { base: InteractiveFilm; scene: FilmScene; selected: string; reviewTrack?: FilmScene["track"]; confirmed?: string[] };
+type Props = {
+    film: InteractiveFilm;
+    scene: FilmScene;
+    resourceId: string;
+    episodes: DramaEpisodeRow[];
+    save: (scene: FilmScene, base: InteractiveFilm) => Promise<InteractiveFilm>;
+    demoMedia?: Record<string, string>;
+    initialTime?: number;
+    scope?: string;
+    recovery?: TrackDraft;
+    onDraftChange?: (draft: TrackDraft | null) => void;
+};
+export function InteractionTrack({ film, scene, resourceId: initialResource, episodes: initialEpisodes, save, demoMedia, initialTime = 0, scope, recovery, onDraftChange }: Props) {
+    const cache = useQueryClient();
+    const [resourceId, setResourceId] = useState(recovery?.scene.track?.resourceId ?? initialResource);
+    const [reviewSource, setReviewSource] = useState<DramaEpisodeRow[]>();
+    const episodes = reviewSource ?? initialEpisodes;
+    const [retry, setRetry] = useState(0);
+    const [failedResource, setFailedResource] = useState<string>();
+    const retryFrame = useRef<{ resource: string; time: number }>(undefined);
+    const resolved = useResourceMediaUrl(demoMedia ? undefined : resourceId, "playback", retry);
     const url = demoMedia?.[scene.id] || resolved;
     const monitor = useRef<HTMLVideoElement>(null);
-    const [base, setBase] = useState(film);
-    const [server, setServer] = useState<InteractiveFilm>();
-    const [stored, setStored] = useState(scene);
-    const [cues, setCues] = useState<FilmCue[]>(scene.track?.cues || []);
-    const [exits, setExits] = useState(() => scene.exits.map((exit) => ({ ...exit, id: exit.id || nanoid() })));
-    const [selected, setSelected] = useState(cues.find((cue) => cue.atMs === initialTime || (cue.kind === "hotspot" && cue.atMs <= initialTime && initialTime < (cue.endMs || 0)))?.id || cues[0]?.id || "");
+    const [base, setBase] = useState(recovery?.base ?? film);
+    const [server, setServer] = useState<InteractiveFilm | undefined>(() => (recovery && (film.revision !== base.revision || initialResource !== resourceId) ? film : undefined));
+    const [serverEpisodes, setServerEpisodes] = useState<DramaEpisodeRow[]>(initialEpisodes);
+    const remoteScene = server?.graph.scenes.find((entry) => entry.id === scene.id);
+    const remoteResource = server && remoteScene && remoteScene.media?.kind !== "event" ? filmSceneResource(remoteScene, server.takes, serverEpisodes) : undefined;
+    const [stored, setStored] = useState(recovery?.scene ?? scene);
+    const [cues, setCues] = useState<FilmCue[]>(stored.track?.cues || []);
+    const [exits, setExits] = useState(() => stored.exits.map((exit) => ({ ...exit, id: exit.id || nanoid() })));
+    const [selected, setSelected] = useState(recovery?.selected ?? (cues.find((cue) => cue.atMs === initialTime || (cue.kind === "hotspot" && cue.atMs <= initialTime && initialTime < (cue.endMs || 0)))?.id || cues[0]?.id || ""));
     const [head, setHead] = useState(0),
         [duration, setDuration] = useState(0);
-    const [reviewed, setReviewed] = useState(scene.track?.resourceId === resourceId || !scene.track?.cues.length);
+    const [confirmed, setConfirmed] = useState<string[]>(recovery?.confirmed || []);
     const [busy, setBusy] = useState(false),
         [savingError, setSavingError] = useState(""),
         [preview, setPreview] = useState(false),
-        [dirty, setDirty] = useState(false);
+        [dirty, setDirty] = useState(!!recovery);
+    const [cached, setCached] = useState(!!recovery);
+    const [observed, setObserved] = useState({ revision: film.revision, resource: initialResource });
+    if (observed.revision !== film.revision || observed.resource !== initialResource) {
+        setObserved({ revision: film.revision, resource: initialResource });
+        if (film.revision >= base.revision && (film.revision !== base.revision || initialResource !== resourceId)) {
+            if (dirty) {
+                setServer(film);
+                setServerEpisodes(initialEpisodes);
+            } else {
+                setBase(film);
+                setStored(scene);
+                setCues(scene.track?.cues || []);
+                setExits(scene.exits.map((exit) => ({ ...exit, id: exit.id || nanoid() })));
+                setSelected(scene.track?.cues[0]?.id || "");
+                setReviewSource(undefined);
+                setConfirmed([]);
+                if (initialResource !== resourceId) setDuration(0);
+                setResourceId(initialResource);
+            }
+        }
+    }
     const active = cues.find((cue) => cue.id === selected);
-    const track = orderedTrack(resourceId, duration, cues);
+    const [restoredReview, setRestoredReview] = useState(recovery?.reviewTrack);
+    const reviewTrack = restoredReview || stored.track;
+    const previousIds = reviewTrack?.resourceId !== resourceId ? reviewTrack?.cues.map((cue) => cue.id) : undefined;
+    const pendingReview = cues.filter((cue) => previousIds?.includes(cue.id) && !confirmed.includes(cue.id));
+    const track = useMemo(() => orderedTrack(resourceId, duration || (stored.track?.resourceId === resourceId ? stored.track.durationMs : 0), cues), [resourceId, duration, cues, stored.track]);
     const baseScene = base.graph.scenes.find((entry) => entry.id === scene.id) || scene;
-    const updated = { ...baseScene, exits, track };
+    const updated = useMemo(() => ({ ...baseScene, exits, track }), [baseScene, exits, track]);
+    const draft = useMemo(() => ({ base, scene: updated, selected, reviewTrack: reviewTrack?.resourceId !== resourceId ? reviewTrack : undefined, confirmed }), [base, updated, selected, reviewTrack, resourceId, confirmed]);
+    useLayoutEffect(() => {
+        onDraftChange?.(dirty ? draft : null);
+    }, [dirty, draft, onDraftChange]);
     const graph = { ...base.graph, scenes: base.graph.scenes.map((entry) => (entry.id === scene.id ? updated : entry)) };
     const issue = filmTrackIssue(updated) || filmRulesIssue(graph);
-    const arrivals = [...new Set(filmArrivals(graph, scene.id).map((arrival) => arrival.item))];
-    const [arrival, setArrival] = useState<string>();
-    const trialItem = arrival !== undefined && arrivals.includes(arrival) ? arrival : arrivals[0] || "";
+    const rehearsal = useSceneRehearsal(graph, scene.id, Math.max(0, (active?.atMs ?? head) - 2000), "试演来路", undefined, base.graph);
     const copyIssue = cues.some((cue) => Array.from(cue.question || "").length > 80 || Array.from(cue.collectionName || "").length > 60);
-    const canSave = duration > 0 && reviewed && dirty && !copyIssue;
+    // A saved track already measured this exact video. Copy edits and retries can
+    // reuse that duration, while new cue timing and placement need the monitor.
+    const savedTrack = stored.track;
+    const knownLayout =
+        savedTrack?.resourceId === resourceId &&
+        savedTrack.durationMs > 0 &&
+        cues.length === savedTrack.cues.length &&
+        cues.every((cue, index) => {
+            const saved = savedTrack.cues[index];
+            return cue.id === saved.id && cue.kind === saved.kind && cue.atMs === saved.atMs && cue.endMs === saved.endMs && cue.x === saved.x && cue.y === saved.y;
+        });
+    const canSave = !server && (duration > 0 || knownLayout) && !pendingReview.length && dirty && !copyIssue;
     const blocker = useBlocker(({ currentLocation, nextLocation }) => {
         if (!dirty) return false;
         if (currentLocation.pathname !== nextLocation.pathname) return true;
@@ -82,6 +148,10 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
     }
     function patch(changes: Partial<FilmCue>) {
         setCues((previous) => previous.map((cue) => (cue.id === selected ? { ...cue, ...changes } : cue)));
+        markEdited();
+    }
+    function markEdited() {
+        setCached(false);
         setDirty(true);
     }
     function add(kind: FilmCue["kind"]) {
@@ -89,24 +159,55 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
         const cue: FilmCue = kind === "choice" ? { id: nanoid(), kind, atMs: head } : { id: nanoid(), kind, atMs: head, endMs: Math.min(head + 3000, duration), x: 50, y: 50, label: kind === "caption" ? "画内对白" : "查看线索", feedback: "" };
         setCues([...cues, cue]);
         setSelected(cue.id);
-        setDirty(true);
+        markEdited();
+    }
+    async function clearDraft() {
+        if (scope) {
+            try {
+                await filmDraftStorage.removeItem(scope);
+            } catch {
+                setSavingError("本机草稿清理失败，请检查浏览器存储。");
+                return false;
+            }
+            cache.setQueryData(["film-track-draft", scope], null);
+        }
+        setCached(false);
+        return true;
     }
     async function persist() {
         if (busy || !canSave) return false;
         setBusy(true);
         setSavingError("");
+        let cacheFailed = false;
+        if (scope) {
+            const entry = draft;
+            try {
+                await filmDraftStorage.setItem(scope, entry);
+                cache.setQueryData(["film-track-draft", scope], entry);
+                setCached(true);
+            } catch {
+                cacheFailed = true;
+            }
+        }
         try {
             const record = await save(updated, base);
             setBase(record);
             setStored(updated);
+            setRestoredReview(undefined);
             setDirty(false);
             setServer(undefined);
+            await clearDraft();
             return true;
         } catch (error) {
-            setSavingError(error instanceof Error ? error.message : "保存失败");
+            const message = error instanceof Error ? error.message : "保存失败";
+            setSavingError(cacheFailed ? `${message}。本机草稿写入失败，请保留页面并重试。` : message);
             if (error instanceof ApiError && error.status === 409) {
                 try {
-                    setServer(await getInteractiveFilm(film.id));
+                    const latest = await getInteractiveFilm(film.id);
+                    const remote = latest.graph.scenes.find((entry) => entry.id === scene.id);
+                    const rows = remote && !remote.media && latest.projectId ? (await getDrama(latest.projectId)).episodes : episodes;
+                    setServerEpisodes(rows);
+                    setServer(latest);
                 } catch {
                     setSavingError("版本冲突，暂时无法读取对方版本。请重试保存。");
                 }
@@ -116,7 +217,7 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
             setBusy(false);
         }
     }
-    if (!resourceId) return <p className="drama-editor-note">本场成片就绪后，可定位画面并配置互动点。</p>;
+    if (!resourceId && !dirty) return <p className="drama-editor-note">本场成片就绪后，可定位画面并配置互动点。</p>;
     return (
         <section className="drama-scriptv-brief film-track-editor">
             <AppModal
@@ -126,7 +227,17 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                     if (!busy) blocker.reset?.();
                 }}
                 footer={[
-                    <Button key="discard" disabled={busy} onClick={() => blocker.proceed?.()}>
+                    <Button
+                        key="discard"
+                        disabled={busy}
+                        onClick={async () => {
+                            if (await clearDraft()) {
+                                setDirty(false);
+                                onDraftChange?.(null);
+                                blocker.proceed?.();
+                            }
+                        }}
+                    >
                         放弃修改
                     </Button>,
                     <Button key="stay" disabled={busy} onClick={() => blocker.reset?.()}>
@@ -149,25 +260,27 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
             </AppModal>
             <div className="drama-section-title">
                 <h2>成片互动轨</h2>
-                <span role="status">{dirty ? "尚未保存" : stored.track ? "已保存" : "尚未配置"}</span>
+                <span role="status">{dirty ? (cached ? "本地草稿待同步" : "尚未保存") : stored.track ? "已保存" : "尚未配置"}</span>
             </div>
-            {!reviewed && (
+            {!!pendingReview.length && <Alert type="warning" title={`成片版本已变更，还有 ${pendingReview.length} 个互动点待复核`} description="选择标有「待复核」的互动点，对照新成片确认时间与位置。" />}
+            {savingError && <Alert type="error" title={savingError} />}
+            {failedResource === resourceId && (
                 <Alert
                     type="warning"
-                    title="成片版本已变更，请复核时间与热点位置"
+                    title="成片加载失败"
                     action={
                         <Button
                             onClick={() => {
-                                setReviewed(true);
-                                setDirty(true);
+                                retryFrame.current = { resource: resourceId, time: duration > 0 ? head : (active?.atMs ?? initialTime) };
+                                setFailedResource(undefined);
+                                setRetry((value) => value + 1);
                             }}
                         >
-                            确认当前画面
+                            重试视频
                         </Button>
                     }
                 />
             )}
-            {savingError && <Alert type="error" title={savingError} />}
             {server && (
                 <details open>
                     <summary>对照服务器版本 {server.revision} 与当前编辑</summary>
@@ -181,13 +294,25 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                             <pre className="film-script">{JSON.stringify(value, null, 2)}</pre>
                         </details>
                     ))}
+                    {!remoteResource && <p>服务器上的本场已移除或没有可编辑的成片，请返回剧情图核对。</p>}
                     <Button
-                        disabled={!server.graph.scenes.some((entry) => entry.id === scene.id)}
+                        disabled={!remoteResource}
                         onClick={() => {
+                            if (!remoteResource) return;
+                            if (remoteResource !== resourceId) {
+                                setStored(updated);
+                                setRestoredReview(undefined);
+                                setConfirmed([]);
+                                setDuration(0);
+                                setHead(0);
+                                setPreview(false);
+                            }
+                            setResourceId(remoteResource);
+                            setReviewSource(serverEpisodes);
                             setBase(server);
                             setServer(undefined);
                             setSavingError("");
-                            setDirty(true);
+                            markEdited();
                         }}
                     >
                         对照完成，使用此版本继续编辑
@@ -198,7 +323,7 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
             {preview && (
                 <>
                     <Button onClick={() => setPreview(false)}>返回互动轨</Button>
-                    <FilmPlayer graph={graph} takes={film.takes} episodes={episodes} demoMedia={demoMedia} initialHistory={[{ id: scene.id, time: Math.max(0, (active?.atMs ?? head) - 2000), state: { item: trialItem, clues: [] } }]} />
+                    <FilmPlayer graph={graph} takes={base.takes} episodes={episodes} demoMedia={demoMedia} initialHistory={rehearsal.history} />
                 </>
             )}
             <fieldset disabled={busy} hidden={preview} className="film-track-fields">
@@ -214,15 +339,19 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                         >
                             {url && (
                                 <video
+                                    key={resourceId + ":" + retry}
                                     ref={monitor}
                                     src={url}
                                     playsInline
                                     preload="metadata"
-                                    onError={() => setSavingError("成片加载失败，请重新打开本场成片")}
+                                    onError={() => setFailedResource(resourceId)}
                                     onLoadedMetadata={(event) => {
                                         const length = Math.round(event.currentTarget.duration * 1000);
                                         setDuration(length);
-                                        const frame = initialTime > 0 ? initialTime : active?.atMs || 0;
+                                        const restore = retryFrame.current;
+                                        const frame = restore?.resource === resourceId ? restore.time : initialTime > 0 ? initialTime : active?.atMs || 0;
+                                        retryFrame.current = undefined;
+                                        setFailedResource(undefined);
                                         if (Number.isFinite(frame)) locate(Math.min(frame, length));
                                     }}
                                     onTimeUpdate={(event) => setHead(Math.round(event.currentTarget.currentTime * 1000))}
@@ -277,17 +406,18 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                                     }}
                                 >
                                     {(cue.atMs / 1000).toFixed(1)}s · {cue.kind === "choice" ? "选择" : cue.label}
+                                    {pendingReview.includes(cue) && " · 待复核"}
                                 </Button>
                             ))}
                         </div>
                         <div className="film-actions">
-                            <Button disabled={!duration || cues.length >= 64 || head >= duration} onClick={() => add("caption")}>
+                            <Button disabled={!duration || cues.length >= MAX_FILM_CUES || head >= duration} onClick={() => add("caption")}>
                                 ＋ 画内对白
                             </Button>
-                            <Button disabled={!duration || cues.length >= 64 || head >= duration} onClick={() => add("hotspot")}>
+                            <Button disabled={!duration || cues.length >= MAX_FILM_CUES || head >= duration} onClick={() => add("hotspot")}>
                                 ＋ 画面热点
                             </Button>
-                            <Button disabled={!duration || cues.length >= 64 || head >= duration || scene.mode !== "choice" || cues.some((cue) => cue.kind === "choice")} onClick={() => add("choice")}>
+                            <Button disabled={!duration || cues.length >= MAX_FILM_CUES || head >= duration || scene.mode !== "choice" || cues.some((cue) => cue.kind === "choice")} onClick={() => add("choice")}>
                                 ＋ 物件 / 选择点
                             </Button>
                         </div>
@@ -350,16 +480,15 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                                     </label>
                                     {exits.map((exit, index) => (
                                         <label key={exit.id}>
-                                            {exit.label} → {film.graph.scenes.find((entry) => entry.id === exit.target)?.title}
+                                            {exit.label} → {base.graph.scenes.find((entry) => entry.id === exit.target)?.title}
                                             <small>{exit.requiresItem ? `需要携带${exit.requiresItem}` : "所有来路"}</small>
-                                            <Input
+                                            <ItemNameInput
                                                 aria-label={exit.label + "选后携带"}
                                                 placeholder="选后携带物（可选）"
                                                 value={exit.item}
-                                                maxLength={60}
-                                                onChange={(event) => {
-                                                    setExits(exits.map((entry, position) => (position === index ? { ...entry, item: event.target.value.trim() } : entry)));
-                                                    setDirty(true);
+                                                onChange={(name) => {
+                                                    setExits(exits.map((entry, position) => (position === index ? { ...entry, item: name } : entry)));
+                                                    markEdited();
                                                 }}
                                             />
                                         </label>
@@ -373,11 +502,23 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                                     )}
                                 </>
                             )}
+                            {pendingReview.includes(active) && (
+                                <Button
+                                    disabled={!duration || active.atMs >= duration || (active.endMs ?? 0) > duration}
+                                    onClick={() => {
+                                        locate(active.atMs);
+                                        setConfirmed([...confirmed, active.id]);
+                                        markEdited();
+                                    }}
+                                >
+                                    确认此互动点
+                                </Button>
+                            )}
                             <Button
                                 onClick={() => {
                                     setCues(cues.filter((cue) => cue.id !== selected));
                                     setSelected("");
-                                    setDirty(true);
+                                    markEdited();
                                 }}
                             >
                                 移除互动点
@@ -386,18 +527,13 @@ export function InteractionTrack({ film, scene, resourceId, episodes, save, demo
                     )}
                 </div>
                 <div className="film-actions">
-                    {arrivals.length > 1 && (
-                        <label>
-                            试演来路
-                            <Select aria-label="试演来路" value={trialItem} onChange={setArrival} options={arrivals.map((item) => ({ value: item, label: item || "空手" }))} />
-                        </label>
-                    )}
+                    {rehearsal.controls}
                     {copyIssue && <span role="alert">问题最多 80 字，线索册名称最多 60 字。</span>}
                     <Button type="primary" disabled={!canSave} loading={busy} onClick={() => void persist()}>
                         保存互动轨
                     </Button>
                     <Button
-                        disabled={!duration || !reviewed || !!issue || copyIssue}
+                        disabled={!rehearsal.arrival || !duration || !!pendingReview.length || !!issue || copyIssue}
                         onClick={() => {
                             monitor.current?.pause();
                             setPreview(true);

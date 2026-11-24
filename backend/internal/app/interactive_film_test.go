@@ -76,6 +76,26 @@ func TestInteractiveFilmImportedOfficialVideo(t *testing.T) {
 	}
 }
 
+func TestInteractiveFilmUploadedClipTrack(t *testing.T) {
+	svc, fake := newDramaTestService(t)
+	const user = "usr-drama"
+	video := fake.resource(user, "video", "video/mp4")
+	scene := model.FilmScene{ID: "a", Title: "入口", Mode: "choice", Media: &model.FilmNodeMedia{Kind: "clip", ResourceID: video}, Track: &model.FilmTrack{ResourceID: video, DurationMs: 8000, Cues: []model.FilmCue{{ID: "choose", Kind: "choice", AtMs: 6000}}}}
+	req := FilmDraftRequest{Title: "半张合照", Graph: model.FilmGraph{Start: "a", Scenes: []model.FilmScene{scene}}}
+	film, err := svc.SaveInteractiveFilm(user, "", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := svc.InteractiveFilm(user, film.ID)
+	if err != nil || stored.Graph.Scenes[0].Track.Cues[0].AtMs != 6000 {
+		t.Fatalf("clip track round trip: %v, %v", stored, err)
+	}
+	req.Graph.Scenes[0].Media = &model.FilmNodeMedia{Kind: "event"}
+	if _, err := svc.SaveInteractiveFilm(user, "", req); err == nil {
+		t.Fatal("accepted video timing on image event")
+	}
+}
+
 func TestInteractiveFilmDraftOwnershipAndRevision(t *testing.T) {
 	svc, _ := newDramaTestService(t)
 	req := FilmDraftRequest{Title: "旧车票", Novel: "站台的故事"}
